@@ -103,6 +103,7 @@ public:
     virtual ~SPIDevice();
 
     bool set_speed(AP_HAL::Device::Speed speed) override;
+    bool set_chip_select(bool set) override;
     bool transfer(const uint8_t *send, uint32_t send_len, uint8_t *recv, uint32_t recv_len) override;
     bool transfer_fullduplex(const uint8_t *send, uint8_t *recv, uint32_t len) override;
     AP_HAL::Semaphore *get_semaphore() override;
@@ -115,7 +116,8 @@ private:
     SPIDeviceDesc &device_desc;
     Speed speed;
     char *pname;
-    void acquire_bus(bool accuire);
+    bool cs_forced;
+    void acquire_bus(bool acquire);
 };
 
 class SPIDeviceManager : public AP_HAL::SPIDeviceManager

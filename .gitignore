@@ -172,6 +172,11 @@ env.bak/
 venv.bak/
 autotest_result_*_junit.xml
 
+# HPM local toolchain / OpenOCD (do not upload binaries)
+/tools/riscv-toolchain/
+/tools/hpm-openocd/
+
+
 # Ignore ESP-IDF SDK defines
 /libraries/AP_HAL_ESP32/targets/esp32/esp-idf/sdkconfig
 /libraries/AP_HAL_ESP32/targets/esp32s3/esp-idf/sdkconfig

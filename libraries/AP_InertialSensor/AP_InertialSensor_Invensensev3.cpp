@@ -1090,9 +1090,17 @@ bool AP_InertialSensor_Invensensev3::hardware_init(void)
 
         // do soft reset
         register_write(INV3REG_456_REG_MISC2, 0x02);
-        hal.scheduler->delay_microseconds(1000);
-        // check if reset done
-        if (!(register_read(INV3REG_456_INT1_STATUS0) & 0x80)) {
+        // Reset completion can take several ms on some boards; poll rather
+        // than a single 1ms check (HPM V6X was failing the one-shot read).
+        bool reset_ok = false;
+        for (uint8_t tries = 0; tries < 50; tries++) {
+            hal.scheduler->delay_microseconds(1000);
+            if (register_read(INV3REG_456_INT1_STATUS0) & 0x80) {
+                reset_ok = true;
+                break;
+            }
+        }
+        if (!reset_ok) {
             // failed to reset
             return false;
         }

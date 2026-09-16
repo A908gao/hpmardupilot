@@ -33,8 +33,10 @@ static Empty::UARTDriver serial6Driver;
 static Empty::UARTDriver serial7Driver;
 static Empty::UARTDriver serial8Driver;
 static Empty::UARTDriver serial9Driver;
-static HPMicro::UARTDriver cons(1);
+// UART0 debug console (hwdef uart_desc index 1). Used as SERIAL0 only when USB VCP is off.
+static HPMicro::UARTDriver uart0Driver(1);
 #ifdef HAL_WITH_USB_VCP
+// USB CDC is SERIAL0 + console (same pattern as ChibiOS boards).
 static HPMicro::USBVCPDriver VCPConsoleDriver(0);
 #else
 static HPMicro::UARTDriver serialConsoleDriver(1, 115200, true);
@@ -89,7 +91,11 @@ static HPMicro::CANIface* canDrivers[HAL_NUM_CAN_IFACES];
 
 HAL_HPM::HAL_HPM() :
     AP_HAL::HAL(
-        &cons, //Console/mavlink
+#ifdef HAL_WITH_USB_VCP
+        &VCPConsoleDriver, // SERIAL0 / USB MAVLink
+#else
+        &uart0Driver,      // SERIAL0 / UART0
+#endif
         &serial1Driver, //Telem 1
         &serial2Driver, //Telem 2
         &serial3Driver, //GPS 1
@@ -98,14 +104,18 @@ HAL_HPM::HAL_HPM() :
         &serial6Driver, //Extra 2
         &serial7Driver, //Extra 3
         &serial8Driver, //Extra 4
+#ifdef HAL_WITH_USB_VCP
+        &uart0Driver,   // Extra 5 / UART0 debug when USB owns SERIAL0
+#else
         &serial9Driver, //Extra 5
+#endif
         &i2cDeviceManager,
         &spiDeviceManager,
         nullptr,
         &analogIn,
         &storageDriver,
 #ifdef HAL_WITH_USB_VCP
-        &VCPConsoleDriver, //Console/mavlink
+        &VCPConsoleDriver, // console == SERIAL0
 #else
         &serialConsoleDriver,
 #endif

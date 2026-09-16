@@ -13,9 +13,17 @@ import json
 _board_classes = {}
 _board = None
 
-# modify our search path:
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../../libraries/AP_HAL_ChibiOS/hwdef/scripts'))
-import chibios_hwdef
+# ChibiOS hwdef scripts are optional in HPM/SITL-only trees.
+_chibios_hwdef_scripts = os.path.join(
+    os.path.dirname(os.path.realpath(__file__)),
+    '../../libraries/AP_HAL_ChibiOS/hwdef/scripts')
+if os.path.isdir(_chibios_hwdef_scripts):
+    sys.path.append(_chibios_hwdef_scripts)
+    import chibios_hwdef  # noqa: E402
+else:
+    chibios_hwdef = None
+# build_options lives in Tools/scripts (was also reachable via ChibiOS hwdef/scripts)
+sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../scripts'))
 import build_options
 
 class BoardMeta(type):
@@ -579,7 +587,10 @@ Board = BoardMeta('Board', Board.__bases__, dict(Board.__dict__))
 
 def add_dynamic_boards_chibios():
     '''add boards based on existance of hwdef.dat in subdirectories for ChibiOS'''
-    dirname, dirlist, filenames = next(os.walk('libraries/AP_HAL_ChibiOS/hwdef'))
+    hwdef_root = 'libraries/AP_HAL_ChibiOS/hwdef'
+    if not os.path.isdir(hwdef_root):
+        return
+    dirname, dirlist, filenames = next(os.walk(hwdef_root))
     for d in dirlist:
         if d in _board_classes.keys():
             continue
@@ -598,7 +609,10 @@ def get_chibios_board_cls(ctx, name, hwdef):
 
 def add_dynamic_boards_esp32():
     '''add boards based on existance of hwdef.dat in subdirectories for ESP32'''
-    dirname, dirlist, filenames = next(os.walk('libraries/AP_HAL_ESP32/hwdef'))
+    hwdef_root = 'libraries/AP_HAL_ESP32/hwdef'
+    if not os.path.isdir(hwdef_root):
+        return
+    dirname, dirlist, filenames = next(os.walk(hwdef_root))
     for d in dirlist:
         if d in _board_classes.keys():
             continue
@@ -612,7 +626,10 @@ def add_dynamic_boards_esp32():
 
 def add_dynamic_boards_hpmicro():
     '''add boards based on existence of hwdef.dat in subdirectories for HPMicro'''
-    dirname, dirlist, filenames = next(os.walk('libraries/AP_HAL_HPMICRO/hwdef'))
+    hwdef_root = 'libraries/AP_HAL_HPMICRO/hwdef'
+    if not os.path.isdir(hwdef_root):
+        return
+    dirname, dirlist, filenames = next(os.walk(hwdef_root))
     for d in dirlist:
         if d in _board_classes.keys():
             continue
@@ -633,7 +650,10 @@ def is_board_based(board, cls):
 def get_ap_periph_boards():
     '''Add AP_Periph boards based on existance of periph keywork in hwdef.dat or board name'''
     list_ap = [s for s in list(_board_classes.keys()) if "periph" in s]
-    dirname, dirlist, filenames = next(os.walk('libraries/AP_HAL_ChibiOS/hwdef'))
+    hwdef_root = 'libraries/AP_HAL_ChibiOS/hwdef'
+    if not os.path.isdir(hwdef_root) or chibios_hwdef is None:
+        return list(set(list_ap))
+    dirname, dirlist, filenames = next(os.walk(hwdef_root))
     for d in dirlist:
         if d in list_ap:
             continue

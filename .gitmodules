@@ -10,9 +10,6 @@
 [submodule "gtest"]
 	path = modules/gtest
 	url = https://github.com/ArduPilot/googletest
-[submodule "modules/ChibiOS"]
-	path = modules/ChibiOS
-	url = https://github.com/ArduPilot/ChibiOS.git
 [submodule "modules/gsoap"]
 	path = modules/gsoap
 	url = https://github.com/ArduPilot/gsoap
@@ -42,9 +39,6 @@
 [submodule "modules/lwip"]
 	path = modules/lwip
 	url = https://github.com/ArduPilot/lwip.git
-[submodule "modules/littlefs"]
-	path = modules/littlefs
-	url = https://github.com/ArduPilot/littlefs.git
 [submodule "modules/tinyalloc"]
 	path = modules/tinyalloc
 	url = https://gitee.com/mirrors_thi-ng/tinyalloc.git

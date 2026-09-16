@@ -7,6 +7,8 @@ import fnmatch
 '''
 list of boards for build_binaries.py and custom build server
 
+HPM/SITL-focused tree: ChibiOS/ESP32/Linux HAL trees may be absent.
+
 AP_FLAKE8_CLEAN
 '''
 
@@ -36,77 +38,66 @@ def in_blacklist(blacklist, b):
 
 class BoardList(object):
 
-    def set_hwdef_dir(self):
-        self.hwdef_dir = os.path.join(
-            os.path.dirname(os.path.realpath(__file__)),
-            "..", "..", "libraries", "AP_HAL_ChibiOS", "hwdef")
-
-        if os.path.exists(self.hwdef_dir):
-            return
-
-        self.hwdef_dir = os.path.join(
-            os.path.dirname(os.path.realpath(__file__)),
-            "libraries", "AP_HAL_ChibiOS", "hwdef")
-
-        if os.path.exists(self.hwdef_dir):
-            # we're on the autotest server and have been copied in
-            # to the APM root directory
-            return
-
-        raise ValueError("Did not find hwdef_dir")
+    def hwdef_dirs(self):
+        '''return existing HAL hwdef directories'''
+        root = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..")
+        candidates = [
+            os.path.join(root, "libraries", "AP_HAL_HPMICRO", "hwdef"),
+            os.path.join(root, "libraries", "AP_HAL_ChibiOS", "hwdef"),
+            os.path.join(root, "libraries", "AP_HAL_ESP32", "hwdef"),
+            # autotest-server layout
+            os.path.join(os.path.dirname(os.path.realpath(__file__)), "libraries", "AP_HAL_HPMICRO", "hwdef"),
+            os.path.join(os.path.dirname(os.path.realpath(__file__)), "libraries", "AP_HAL_ChibiOS", "hwdef"),
+        ]
+        found = []
+        for d in candidates:
+            if os.path.isdir(d) and d not in found:
+                found.append(d)
+        return found
 
     def __init__(self):
-        self.set_hwdef_dir()
-
-        # no hwdefs for Linux boards - yet?
+        # SITL always available; Linux SBC boards omitted in this slim tree
         self.boards = [
-            Board("erlebrain2"),
-            Board("navigator"),
-            Board("navigator64"),
-            Board("navio"),
-            Board("navio2"),
-            Board("edge"),
-            Board("obal"),
-            Board("pxf"),
-            Board("bbbmini"),
-            Board("blue"),
-            Board("pxfmini"),
-            Board("canzero"),
+            Board("sitl"),
             Board("SITL_x86_64_linux_gnu"),
             Board("SITL_arm_linux_gnueabihf"),
         ]
+        # keep hwdef_dir for any legacy callers
+        dirs = self.hwdef_dirs()
+        self.hwdef_dir = dirs[0] if dirs else None
 
-        for adir in os.listdir(self.hwdef_dir):
-            if adir is None:
-                continue
-            if not os.path.isdir(os.path.join(self.hwdef_dir, adir)):
-                continue
-            if adir in ["scripts", "common", "STM32CubeConf"]:
-                continue
-            filepath = os.path.join(self.hwdef_dir, adir, "hwdef.dat")
-            if not os.path.exists(filepath):
-                continue
-            filepath = os.path.join(self.hwdef_dir, adir, "hwdef.dat")
-            text = self.read_hwdef(filepath)
+        for hwdef_dir in dirs:
+            for adir in os.listdir(hwdef_dir):
+                if adir is None:
+                    continue
+                if not os.path.isdir(os.path.join(hwdef_dir, adir)):
+                    continue
+                if adir in ["scripts", "common", "STM32CubeConf"]:
+                    continue
+                filepath = os.path.join(hwdef_dir, adir, "hwdef.dat")
+                if not os.path.exists(filepath):
+                    continue
+                if any(b.name == adir for b in self.boards):
+                    continue
+                text = self.read_hwdef(filepath)
 
-            board = Board(adir)
-            self.boards.append(board)
-            for line in text:
-                if re.match(r"^\s*env AP_PERIPH 1", line):
-                    board.is_ap_periph = 1
-                if re.match(r"^\s*env AP_PERIPH_HEAVY 1", line):
-                    board.is_ap_periph = 1
+                board = Board(adir)
+                self.boards.append(board)
+                for line in text:
+                    if re.match(r"^\s*env AP_PERIPH 1", line):
+                        board.is_ap_periph = 1
+                    if re.match(r"^\s*env AP_PERIPH_HEAVY 1", line):
+                        board.is_ap_periph = 1
 
-                # a hwdef can specify which vehicles this target is valid for:
-                match = re.match(r"AUTOBUILD_TARGETS\s*(.*)", line)
-                if match is not None:
-                    mname = match.group(1)
-                    if mname.lower() == 'none':
-                        board.autobuild_targets = []
-                    else:
-                        board.autobuild_targets = [
-                            x.rstrip().lstrip().lower() for x in mname.split(",")
-                        ]
+                    match = re.match(r"AUTOBUILD_TARGETS\s*(.*)", line)
+                    if match is not None:
+                        mname = match.group(1)
+                        if mname.lower() == 'none':
+                            board.autobuild_targets = []
+                        else:
+                            board.autobuild_targets = [
+                                x.rstrip().lstrip().lower() for x in mname.split(",")
+                            ]
 
     def read_hwdef(self, filepath):
         fh = open(filepath)
@@ -127,25 +118,12 @@ class BoardList(object):
                 continue
             ret.append(board.name)
 
-        # these were missing in the original list for unknown reasons.
-        # Omitting them for backwards-compatability here - but we
-        # should probably have a line in the hwdef indicating they
-        # shouldn't be auto-built...
         blacklist = [
-            # IOMCU:
             "iomcu",
             'iomcu_f103_8MHz',
-
-            # bdshot
             "fmuv3-bdshot",
-
-            # renamed to KakuteH7Mini-Nand
             "KakuteH7Miniv2",
-
-            # renamed to AtomRCF405NAVI
-            "AtomRCF405"
-
-            # other
+            "AtomRCF405",
             "crazyflie2",
             "CubeOrange-joey",
             "luminousbee4",
@@ -159,9 +137,7 @@ class BoardList(object):
 
         ret = filter(lambda x : not in_blacklist(blacklist, x), ret)
 
-        # if the caller has supplied a vehicle to limit to then we do that here:
         if build_target is not None:
-            # Slow down: n^2 algorithm ahead
             newret = []
             for x in ret:
                 for b in self.boards:

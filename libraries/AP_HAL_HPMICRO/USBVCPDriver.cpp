@@ -24,6 +24,7 @@ volatile uint32_t write_buffer_wr = 0;
 volatile uint32_t max_tx = 0, max_rx = 0;
 volatile uint8_t read_buffer_index;
 volatile bool dtr_enable;
+volatile bool usb_configured;
 /*!< endpoint address */
 #define CDC_IN_EP  0x81
 #define CDC_OUT_EP 0x01
@@ -85,17 +86,26 @@ void USBVCPDriver::_end()
 
 void USBVCPDriver::_flush()
 {
-    // Peek at bytes in buffer without consuming them
-    _buffer_avalable = _writebuf.peekbytes(_buffer, sizeof(_buffer));
-    
-    if (_buffer_avalable > 0) {
-        
-        memcpy(&write_buffer[0], _buffer, _buffer_avalable);
-
-        usbd_ep_start_write(0, CDC_IN_EP, &write_buffer[0], _buffer_avalable);
-        _transmitting = true;
+    if (!_initialized) {
+        return;
     }
-    while(_transmitting == true);
+
+    // Kick TX if idle, then wait briefly for IN completion.
+    // Never spin forever: if the host is not reading (or USB stalled),
+    // an infinite wait here deadlocks the whole FC after CDC enumerates.
+    write_data();
+    const uint32_t t0 = AP_HAL::millis();
+    while (_transmitting || _writebuf.available() > 0) {
+        if (!_transmitting) {
+            write_data();
+        }
+        if ((AP_HAL::millis() - t0) > 20) {
+            // Host may not be reading; drop the in-flight claim so later
+            // MAVLink/console TX is not permanently blocked.
+            _transmitting = false;
+            break;
+        }
+    }
 }
 
 bool USBVCPDriver::is_initialized()
@@ -156,8 +166,18 @@ void  USBVCPDriver::_timer_tick(void)
     if (!_initialized) {
         return;
     }
-    // USB VCP data handling will go here
-    // For now, we'll just leave this as a placeholder
+    // Recover from stalled IN transfers (common when host opens late / no reader).
+    static uint32_t tx_start_ms;
+    if (_transmitting) {
+        if (tx_start_ms == 0) {
+            tx_start_ms = AP_HAL::millis();
+        } else if ((AP_HAL::millis() - tx_start_ms) > 50) {
+            _transmitting = false;
+            tx_start_ms = 0;
+        }
+    } else {
+        tx_start_ms = 0;
+    }
     read_data();
     write_data();
 }
@@ -173,6 +193,11 @@ void USBVCPDriver::read_data()
 void USBVCPDriver::write_data()
 {
     if (_transmitting) {
+        return;
+    }
+    // Wait until the host has configured the device. Do not require DTR:
+    // VMware/some GCS paths never deliver SET_CONTROL_LINE_STATE.
+    if (!usb_configured) {
         return;
     }
 
@@ -350,10 +375,14 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
 {
     switch (event) {
     case USBD_EVENT_RESET:
+        usb_configured = false;
+        dtr_enable = false;
         break;
     case USBD_EVENT_CONNECTED:
         break;
     case USBD_EVENT_DISCONNECTED:
+        usb_configured = false;
+        dtr_enable = false;
         break;
     case USBD_EVENT_RESUME:
         break;
@@ -361,6 +390,7 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
         break;
     case USBD_EVENT_CONFIGURED:
         /* setup first out ep read transfer */
+        usb_configured = true;
         read_buffer_index = 0;
         usbd_ep_start_read(busid, CDC_OUT_EP, &read_buffer[0][0], usbd_get_ep_mps(busid, CDC_OUT_EP));
         break;
@@ -429,4 +459,11 @@ void cdc_acm_init(uint8_t busid, uint32_t reg_base)
 
     usbd_initialize(busid, reg_base, usbd_event_handler);
 }
+}
+
+extern "C" void usbd_cdc_acm_set_dtr(uint8_t busid, uint8_t intf, bool dtr)
+{
+    (void)busid;
+    (void)intf;
+    dtr_enable = dtr;
 }

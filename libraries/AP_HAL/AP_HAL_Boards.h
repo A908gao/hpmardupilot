@@ -73,6 +73,7 @@
 #define HAL_BOARD_SUBTYPE_ESP32_S3EMPTY         6008
 
 #define HAL_BOARD_SUBTYPE_HPMPILOTBF67          7001
+#define HAL_BOARD_SUBTYPE_HPMV6X_HPM            7002
 
 /* InertialSensor driver types */
 #define HAL_INS_NONE         0

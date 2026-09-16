@@ -72,7 +72,7 @@ void UARTDriver::_begin(uint32_t b, uint16_t rxS, uint16_t txS)
 
             stat = uart_init(p, &config);
             if (stat != status_success) {
-                while(1);
+                return;
             }
             _readbuf.set_size(RX_BUF_SIZE);
             _writebuf.set_size(TX_BUF_SIZE);
@@ -107,30 +107,8 @@ void UARTDriver::_end()
 
 void UARTDriver::_flush()
 {
-    UART_Type *p = uart_desc[uart_num].port;
-    _write_mutex.take_blocking();
-
-    do {
-        // Peek at bytes in buffer without consuming them
-        _buffer_avalable = _writebuf.peekbytes(_buffer, sizeof(_buffer));
-        
-        if (_buffer_avalable > 0) {
-            _buffer_idx = 0;
-            
-            // NOP for UART0 (likely a timing workaround)
-            if (uart_num == 0) {
-                __asm volatile ("nop");
-            }
-            
-            // Send first byte
-            uart_send_data(p, &_buffer[0], sizeof(_buffer));
-            
-            // Advance buffer pointer
-            _writebuf.advance(_buffer_avalable);
-        }
-    } while (_buffer_avalable > 0);
-
-    _write_mutex.give();
+    // Reuse the non-blocking polled path; never hang forever on TX.
+    write_data();
 }
 
 bool UARTDriver::is_initialized()
@@ -217,54 +195,39 @@ void UARTDriver::read_data()
 
 /**
  * @brief Write data from buffer to UART
- * @details Sends data from the transmit buffer to the UART hardware
+ * @details Polled TX from the uart thread. Never block holding _write_mutex
+ *          waiting on TX IRQ — that deadlocks GCS/console printf on the same port.
  */
 void UARTDriver::write_data()
 {
     UART_Type *p = uart_desc[uart_num].port;
-    _write_mutex.take_blocking();
-    
-    // Check if already transmitting
-    if (uart_get_enabled_irq(p) & uart_intr_tx_slot_avail) {
-        // Already transmitting
-        _write_mutex.give();
+    if (!_write_mutex.take_nonblocking()) {
         return;
     }
 
-    do {
-        // Peek at bytes in buffer without consuming them
-        _buffer_avalable = _writebuf.peekbytes(_buffer, sizeof(_buffer));
-        
-        if (_buffer_avalable > 0) {
-            _buffer_idx = 0;
-            
-            // NOP for UART0 (likely a timing workaround)
-            if (uart_num == 0) {
-                __asm volatile ("nop");
-            }
-            
-            // Send first byte
-            
-            // If more bytes to send, enable transmit interrupt
-            if (_buffer_avalable > 1) {
-                uart_enable_irq(p, uart_intr_tx_slot_avail);
-                while(status_success != uart_send_byte(p, _buffer[0])) {
-                    // Wait for tx fifo empty
-                    //TODO, add later version UART ip support
-                }
-                _write_buffer_output_mutex.wait_blocking();
-            } else {
-                while(status_success != uart_send_byte(p, _buffer[0])) {
-                    // Wait for tx fifo empty
-                    //TODO, add later version UART ip support
-                }
-            }
-            
-            // Advance buffer pointer
-            _writebuf.advance(_buffer_avalable);
+    // Drop any stale TX-IRQ wait path; drain with a short polled timeout.
+    if (uart_get_enabled_irq(p) & uart_intr_tx_slot_avail) {
+        uart_disable_irq(p, uart_intr_tx_slot_avail);
+    }
+
+    const uint32_t t_start = AP_HAL::millis();
+    while (_writebuf.available() > 0) {
+        uint8_t byte;
+        if (_writebuf.peekbytes(&byte, 1) != 1) {
+            break;
         }
-    } while (_buffer_avalable > 0);
-    
+        while (status_success != uart_send_byte(p, byte)) {
+            if ((AP_HAL::millis() - t_start) > 5) {
+                _write_mutex.give();
+                return;
+            }
+        }
+        _writebuf.advance(1);
+        if ((AP_HAL::millis() - t_start) > 5) {
+            break;
+        }
+    }
+
     _write_mutex.give();
 }
 

@@ -125,7 +125,17 @@ GPIO::GPIO()
 }
 
 void GPIO::init()
-{}
+{
+#if AP_NOTIFY_GPIO_LED_RGB_ENABLED
+    // PixRacerLED skips pinMode when HAL_GPIO_LED_ON==0; set outputs here.
+    pinMode(AP_NOTIFY_GPIO_LED_RGB_RED_PIN, HAL_GPIO_OUTPUT);
+    pinMode(AP_NOTIFY_GPIO_LED_RGB_GREEN_PIN, HAL_GPIO_OUTPUT);
+    pinMode(AP_NOTIFY_GPIO_LED_RGB_BLUE_PIN, HAL_GPIO_OUTPUT);
+    write(AP_NOTIFY_GPIO_LED_RGB_RED_PIN, HAL_GPIO_LED_OFF);
+    write(AP_NOTIFY_GPIO_LED_RGB_GREEN_PIN, HAL_GPIO_LED_OFF);
+    write(AP_NOTIFY_GPIO_LED_RGB_BLUE_PIN, HAL_GPIO_LED_OFF);
+#endif
+}
 
 void GPIO::pinMode(uint8_t pin, uint8_t output)
 {

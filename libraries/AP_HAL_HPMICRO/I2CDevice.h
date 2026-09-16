@@ -110,6 +110,10 @@ public:
     static I2CBus businfo[];
     I2CDeviceManager();
 
+    // Must run after board_init_clock() — I2C baud is derived from AHB freq.
+    void init(void);
+    static void init_singleton(void);
+
     AP_HAL::OwnPtr<AP_HAL::I2CDevice> get_device(uint8_t bus, uint8_t address,
             uint32_t bus_clock=400000,
             bool use_smbus = false,
@@ -129,6 +133,8 @@ public:
      */
     uint32_t get_bus_mask_internal(void) const override;
 
+private:
+    bool _initialized;
 };
 
 } // namespace HPMicro

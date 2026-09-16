@@ -20,7 +20,8 @@
 
 // SPI Configuration Parameters - defined in hwdef.dat
 #ifndef HPM_SPI_TIMEOUT_VALUE
-#define HPM_SPI_TIMEOUT_VALUE 0xFFFFFFFF  // Default infinite timeout for SPI operations
+#define HPM_SPI_TIMEOUT_VALUE 100000  // ~100ms-scale timeout, never block forever
+
 #endif
 
 using namespace HPMicro;
@@ -145,16 +146,38 @@ SPIBus::SPIBus(uint8_t _bus):
     HPM_IOC->PAD[bus_desc[_bus].mosi].PAD_CTL = IOC_PAD_PAD_CTL_DS_SET(6) | IOC_PAD_PAD_CTL_PE_SET(1);
     HPM_IOC->PAD[bus_desc[_bus].miso].PAD_CTL = IOC_PAD_PAD_CTL_DS_SET(6) | IOC_PAD_PAD_CTL_PE_SET(1);
     HPM_IOC->PAD[bus_desc[_bus].sclk].PAD_CTL = IOC_PAD_PAD_CTL_DS_SET(6) | IOC_PAD_PAD_CTL_PE_SET(1);
-    HPM_BIOC->PAD[bus_desc[_bus].mosi].FUNC_CTL = bus_desc[_bus].mosi_baf;
-    HPM_BIOC->PAD[bus_desc[_bus].miso].FUNC_CTL = bus_desc[_bus].miso_baf;
+    if (bus_desc[_bus].mosi_baf) {
+        HPM_BIOC->PAD[bus_desc[_bus].mosi].FUNC_CTL = bus_desc[_bus].mosi_baf;
+    }
+    if (bus_desc[_bus].miso_baf) {
+        HPM_BIOC->PAD[bus_desc[_bus].miso].FUNC_CTL = bus_desc[_bus].miso_baf;
+    }
     if (bus_desc[_bus].sclk_baf) {
-        HPM_BIOC->PAD[bus_desc[_bus].sclk].FUNC_CTL = bus_desc[_bus].sclk_baf | IOC_PAD_FUNC_CTL_LOOP_BACK_SET(1);
+        HPM_BIOC->PAD[bus_desc[_bus].sclk].FUNC_CTL = bus_desc[_bus].sclk_baf;
     }
-    HPM_PIOC->PAD[bus_desc[_bus].mosi].FUNC_CTL = bus_desc[_bus].mosi_paf;
-    HPM_PIOC->PAD[bus_desc[_bus].miso].FUNC_CTL = bus_desc[_bus].miso_paf;
+    if (bus_desc[_bus].mosi_paf) {
+        HPM_PIOC->PAD[bus_desc[_bus].mosi].FUNC_CTL = bus_desc[_bus].mosi_paf;
+    }
+    if (bus_desc[_bus].miso_paf) {
+        HPM_PIOC->PAD[bus_desc[_bus].miso].FUNC_CTL = bus_desc[_bus].miso_paf;
+    }
     if (bus_desc[_bus].sclk_paf) {
-        HPM_PIOC->PAD[bus_desc[_bus].sclk].FUNC_CTL = bus_desc[_bus].sclk_paf | IOC_PAD_FUNC_CTL_LOOP_BACK_SET(1);
+        HPM_PIOC->PAD[bus_desc[_bus].sclk].FUNC_CTL = bus_desc[_bus].sclk_paf;
     }
+
+#ifdef HAL_HPM_SPI2_BOARD_MUX_PIN
+    // FMU V6X: SPI2 via TMUX1574. SEL=SPI2_CSN1 high => onboard ICM45686.
+    if (bus_desc[_bus].host == HPM_SPI2) {
+        HPM_IOC->PAD[HAL_HPM_SPI2_BOARD_MUX_PIN].FUNC_CTL = 0;
+        HPM_IOC->PAD[HAL_HPM_SPI2_BOARD_MUX_PIN].PAD_CTL =
+            IOC_PAD_PAD_CTL_DS_SET(6) | IOC_PAD_PAD_CTL_PE_SET(1) | IOC_PAD_PAD_CTL_PS_SET(1);
+        gpio_set_pin_output_with_initial(HPM_GPIO0,
+                                         GPIO_GET_PORT_INDEX(HAL_HPM_SPI2_BOARD_MUX_PIN),
+                                         GPIO_GET_PIN_INDEX(HAL_HPM_SPI2_BOARD_MUX_PIN),
+                                         1);
+    }
+#endif
+
     intc_m_enable_irq(bus_desc[_bus].dma_irqn);
     dma_tx_buffer = (uint32_t *)hpmhal.util->malloc_type(1024, AP_HAL::Util::MEM_DMA_SAFE);
     dma_rx_buffer = (uint32_t *)hpmhal.util->malloc_type(1024, AP_HAL::Util::MEM_DMA_SAFE);
@@ -169,21 +192,23 @@ SPIBus::~SPIBus()
 SPIDevice::SPIDevice(SPIBus &_bus, SPIDeviceDesc &_device_desc)
     : bus(_bus)
     , device_desc(_device_desc)
+    , cs_forced(false)
 {
 #ifdef SPIDEBUG
     hpmhal.console->printf("%s:%d \n", __PRETTY_FUNCTION__, __LINE__);
 #endif
-    spi_timing_config_t timing_config = {0};
-    spi_format_config_t format_config = {0};
-
-    uint32_t spi_clock;
     set_device_bus(bus.bus);
     set_device_address(_device_desc.device);
-    set_speed(AP_HAL::Device::SPEED_LOW);
 
     clock_add_to_group(bus_desc[_bus.bus].host_clk, 0);
     clock_add_to_group(clock_xdma, 0);
     clock_add_to_group(clock_hdma, 0);
+    set_speed(AP_HAL::Device::SPEED_LOW);
+
+    uint32_t spi_clock;
+    spi_timing_config_t timing_config = {0};
+    spi_format_config_t format_config = {0};
+
     spi_clock = clock_get_frequency(bus_desc[_bus.bus].host_clk);
 
     spi_master_get_default_timing_config(&timing_config);
@@ -238,10 +263,8 @@ bool SPIDevice::set_speed(AP_HAL::Device::Speed _speed)
         timing_config.master_config.sclk_freq_in_hz = device_desc.lspeed;
     }
     if (status_success != spi_master_timing_init(bus_desc[bus.bus].host, &timing_config)) {
-        hpmhal.console->printf("SPI master timming init failed\n");
-        while (1) {
-            hpmhal.scheduler->delay(1000);
-        }
+        hpmhal.console->printf("SPI master timing init failed (%s)\n", device_desc.name);
+        return false;
     }
     return true;
 }
@@ -253,9 +276,7 @@ bool SPIDevice::transfer(const uint8_t *send, uint32_t send_len,
     hpmhal.console->printf("%s:%d \n", __PRETTY_FUNCTION__, __LINE__);
 #endif
     if (!send || !recv) {
-        // simplest cases
-        transfer_fullduplex(send, recv, recv_len?recv_len:send_len);
-        return true;
+        return transfer_fullduplex(send, recv, recv_len?recv_len:send_len);
     }
     uint8_t buf[send_len+recv_len];
     if (send_len > 0) {
@@ -264,7 +285,9 @@ bool SPIDevice::transfer(const uint8_t *send, uint32_t send_len,
     if (recv_len > 0) {
         memset(&buf[send_len], 0, recv_len);
     }
-    transfer_fullduplex(buf, buf, send_len+recv_len);
+    if (!transfer_fullduplex(buf, buf, send_len+recv_len)) {
+        return false;
+    }
     if (recv_len > 0) {
         memcpy(recv, &buf[send_len], recv_len);
     }
@@ -277,22 +300,28 @@ bool SPIDevice::transfer_fullduplex(const uint8_t *send, uint8_t *recv, uint32_t
     hpmhal.console->printf("%s:%d \n", __PRETTY_FUNCTION__, __LINE__);
 #endif
     acquire_bus(true);
-    uint32_t stat;
+    uint32_t stat = status_fail;
     if (send && recv && len) {
-        spi_control_config_t control_config = {0};
-        if (len <= 8) {
+        // Prefer blocking for moderate sizes. Fast IMU FIFO reads are typically
+        // <= 8 samples (~128B); the DMA completion wait previously used
+        // wait(100) which is 100us -> 0 FreeRTOS ticks, so FIFO DMA always
+        // timed out and ICM45686 data froze after fast sampling started.
+        if (len <= 512) {
             stat = hpm_spi_transmit_receive_blocking(bus_desc[bus.bus].host, (uint8_t *)send, (uint8_t *)recv, len, HPM_SPI_TIMEOUT_VALUE);
         } else {
             SPIBusDesc *pbus_desc = &bus_desc[bus.bus];
             SPI_Type *instance = (SPI_Type *)(pbus_desc->host);
             memcpy(bus.dma_tx_buffer, send, len);
-            if ((spi_is_active(instance) == true))
+            if ((spi_is_active(instance) == true)) {
+                acquire_bus(false);
                 return false;
+            }
             spi_disable_tx_dma(instance);
             spi_disable_rx_dma(instance);
 
             dmamux_config(HPM_DMAMUX, DMA_SOC_CHN_TO_DMAMUX_CHN(pbus_desc->dma, pbus_desc->dma_ch_tx), pbus_desc->dma_tx_src, true);
             dmamux_config(HPM_DMAMUX, DMA_SOC_CHN_TO_DMAMUX_CHN(pbus_desc->dma, pbus_desc->dma_ch_rx), pbus_desc->dma_rx_src, true);
+            spi_control_config_t control_config = {0};
             spi_master_get_default_control_config(&control_config);
             control_config.master_config.cmd_enable = false;
             control_config.master_config.addr_enable = false;
@@ -308,15 +337,17 @@ bool SPIDevice::transfer_fullduplex(const uint8_t *send, uint8_t *recv, uint32_t
                                 0, 0,
                                 len, len);
             if (stat != status_success) {
-                while (1) {
-                    hpmhal.scheduler->delay(1000);
-                }
+                acquire_bus(false);
+                return false;
             }
             if (pbus_desc->dma == HPM_XDMA) {
                 dmaDescriptors_xdma[pbus_desc->dma_ch_tx].bin_sem = get_binsemaphore();
             } else {
                 dmaDescriptors_hdma[bus_desc[bus.bus].dma_ch_rx].bin_sem = get_binsemaphore();
             }
+            // Drain any stale completion before arming DMA
+            const bool drained = get_binsemaphore()->wait(0);
+            (void)drained;
             dma_enable_channel_interrupt(pbus_desc->dma, bus_desc[bus.bus].dma_ch_rx, DMA_INTERRUPT_MASK_TERMINAL_COUNT);
             stat = spi_tx_trigger_dma(pbus_desc->dma,
                                     (uint32_t)bus_desc[bus.bus].dma_ch_tx,
@@ -325,10 +356,8 @@ bool SPIDevice::transfer_fullduplex(const uint8_t *send, uint8_t *recv, uint32_t
                                     DMA_TRANSFER_WIDTH_BYTE,
                                     len);
             if (stat != status_success) {
-                hpmhal.console->printf("spi tx trigger dma failed\n");
-                while (1) {
-                    hpmhal.scheduler->delay(1000);
-                }
+                acquire_bus(false);
+                return false;
             }
             stat = spi_rx_trigger_dma(pbus_desc->dma,
                                     (uint32_t)bus_desc[bus.bus].dma_ch_rx,
@@ -337,18 +366,16 @@ bool SPIDevice::transfer_fullduplex(const uint8_t *send, uint8_t *recv, uint32_t
                                     DMA_TRANSFER_WIDTH_BYTE,
                                     len);
             if (stat != status_success) {
-                hpmhal.console->printf("spi rx trigger dma failed\n");
-                while (1) {
-                    hpmhal.scheduler->delay(1000);
-                }
+                acquire_bus(false);
+                return false;
             }
+            // BinarySemaphore::wait() takes microseconds
             if (get_binsemaphore()->wait(100000) == false) {
-                hpmhal.console->printf("SPI DMA RX timeout\n");
-                while (1) {
-                    hpmhal.scheduler->delay(1000);
-                }
+                acquire_bus(false);
+                return false;
             }
             memcpy(recv, bus.dma_rx_buffer, len);
+            stat = status_success;
         }
     } else if (send != 0) {
         stat = hpm_spi_transmit_blocking(bus_desc[bus.bus].host, (uint8_t *)send, len, HPM_SPI_TIMEOUT_VALUE);
@@ -358,10 +385,8 @@ bool SPIDevice::transfer_fullduplex(const uint8_t *send, uint8_t *recv, uint32_t
         stat = 2;
     }
     if (stat != status_success) {
-        hpmhal.console->printf("SPI transfer failed\n");
-        while(1) {
-            hpmhal.scheduler->delay(1000);
-        }
+        acquire_bus(false);
+        return false;
     }
     acquire_bus(false);
     return true;
@@ -373,15 +398,43 @@ void SPIDevice::acquire_bus(bool acquire)
     hpmhal.console->printf("%s:%d \n", __PRETTY_FUNCTION__, __LINE__);
 #endif
     if (acquire) {
+        // When CS is forced (FRAM multi-part xfer), keep CS low and do not
+        // nest-take the bus lock again — caller already holds the semaphore.
+        if (cs_forced) {
+            return;
+        }
         bool status = get_semaphore()->take(HAL_SEMAPHORE_BLOCK_FOREVER);
         if (status) {
             gpio_write_pin(HPM_GPIO0, GPIO_GET_PORT_INDEX(device_desc.cs), GPIO_GET_PIN_INDEX(device_desc.cs), 0);
         }
     } else {
+        if (cs_forced) {
+            return;
+        }
         gpio_write_pin(HPM_GPIO0, GPIO_GET_PORT_INDEX(device_desc.cs), GPIO_GET_PIN_INDEX(device_desc.cs), 1);
         bool status = get_semaphore()->give();
         (void)status;
     }
+}
+
+/*
+  Hold CS across multiple transfer() calls (required by AP_RAMTRON).
+  Caller must already hold get_semaphore() (e.g. WITH_SEMAPHORE).
+ */
+bool SPIDevice::set_chip_select(bool set)
+{
+    if (set) {
+        if (!cs_forced) {
+            gpio_write_pin(HPM_GPIO0, GPIO_GET_PORT_INDEX(device_desc.cs), GPIO_GET_PIN_INDEX(device_desc.cs), 0);
+            cs_forced = true;
+        }
+        return true;
+    }
+    if (cs_forced) {
+        gpio_write_pin(HPM_GPIO0, GPIO_GET_PORT_INDEX(device_desc.cs), GPIO_GET_PIN_INDEX(device_desc.cs), 1);
+        cs_forced = false;
+    }
+    return true;
 }
 
 AP_HAL::Semaphore *SPIDevice::get_semaphore()
@@ -455,8 +508,12 @@ SPIDeviceManager::get_device(const char *name)
         for (i = 0; i<ARRAY_SIZE(device_desc); i++) {
             SPIDeviceDesc &curr_desc = device_desc[i];
             if (desc.bus == curr_desc.bus) {
-                HPM_BIOC->PAD[curr_desc.cs].FUNC_CTL = curr_desc.baf;
-                HPM_PIOC->PAD[curr_desc.cs].FUNC_CTL = curr_desc.paf;
+                if (curr_desc.baf) {
+                    HPM_BIOC->PAD[curr_desc.cs].FUNC_CTL = curr_desc.baf;
+                }
+                if (curr_desc.paf) {
+                    HPM_PIOC->PAD[curr_desc.cs].FUNC_CTL = curr_desc.paf;
+                }
                 HPM_IOC->PAD[curr_desc.cs].FUNC_CTL = 0;
                 HPM_IOC->PAD[curr_desc.cs].PAD_CTL = IOC_PAD_PAD_CTL_DS_SET(6) | IOC_PAD_PAD_CTL_PE_SET(1) | IOC_PAD_PAD_CTL_PS_SET(1);
                 

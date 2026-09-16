@@ -28,8 +28,20 @@ I2CBusDesc i2c_bus_desc[] = { HAL_HPM_I2C_BUSES };
 
 I2CBus I2CDeviceManager::businfo[ARRAY_SIZE(i2c_bus_desc)];
 
+static I2CDeviceManager *i2c_mgr_singleton;
+
 I2CDeviceManager::I2CDeviceManager(void)
+    : _initialized(false)
 {
+    i2c_mgr_singleton = this;
+    // Hardware init must wait for board_init_clock() — see init().
+}
+
+void I2CDeviceManager::init(void)
+{
+    if (_initialized) {
+        return;
+    }
 #ifdef I2CDEBUG
     hpmhal.console->printf("%s:%d \n", __PRETTY_FUNCTION__, __LINE__);
 #endif
@@ -41,31 +53,57 @@ I2CDeviceManager::I2CDeviceManager(void)
         } else {
             HPM_IOC->PAD[i2c_bus_desc[i].sda].FUNC_CTL = i2c_bus_desc[i].sda_af | IOC_PAD_FUNC_CTL_LOOP_BACK_MASK;
             HPM_IOC->PAD[i2c_bus_desc[i].scl].FUNC_CTL = i2c_bus_desc[i].scl_af | IOC_PAD_FUNC_CTL_LOOP_BACK_MASK;
-            HPM_BIOC->PAD[i2c_bus_desc[i].sda].FUNC_CTL = i2c_bus_desc[i].sda_baf;
-            HPM_BIOC->PAD[i2c_bus_desc[i].scl].FUNC_CTL = i2c_bus_desc[i].scl_baf;
-            HPM_PIOC->PAD[i2c_bus_desc[i].sda].FUNC_CTL = i2c_bus_desc[i].sda_paf;
-            HPM_PIOC->PAD[i2c_bus_desc[i].scl].FUNC_CTL = i2c_bus_desc[i].scl_paf;
+            if (i2c_bus_desc[i].sda_baf) {
+                HPM_BIOC->PAD[i2c_bus_desc[i].sda].FUNC_CTL = i2c_bus_desc[i].sda_baf;
+            }
+            if (i2c_bus_desc[i].scl_baf) {
+                HPM_BIOC->PAD[i2c_bus_desc[i].scl].FUNC_CTL = i2c_bus_desc[i].scl_baf;
+            }
+            if (i2c_bus_desc[i].sda_paf) {
+                HPM_PIOC->PAD[i2c_bus_desc[i].sda].FUNC_CTL = i2c_bus_desc[i].sda_paf;
+            }
+            if (i2c_bus_desc[i].scl_paf) {
+                HPM_PIOC->PAD[i2c_bus_desc[i].scl].FUNC_CTL = i2c_bus_desc[i].scl_paf;
+            }
 
-            HPM_IOC->PAD[i2c_bus_desc[i].sda].PAD_CTL = IOC_PAD_PAD_CTL_OD_MASK;
-            HPM_IOC->PAD[i2c_bus_desc[i].scl].PAD_CTL = IOC_PAD_PAD_CTL_OD_MASK;
+            // Open-drain + pull-up (board also has external pullups on I2C2)
+            HPM_IOC->PAD[i2c_bus_desc[i].sda].PAD_CTL =
+                IOC_PAD_PAD_CTL_OD_MASK | IOC_PAD_PAD_CTL_PE_SET(1) | IOC_PAD_PAD_CTL_PS_SET(1);
+            HPM_IOC->PAD[i2c_bus_desc[i].scl].PAD_CTL =
+                IOC_PAD_PAD_CTL_OD_MASK | IOC_PAD_PAD_CTL_PE_SET(1) | IOC_PAD_PAD_CTL_PS_SET(1);
             i2c_config_t config;
             hpm_stat_t stat;
             uint32_t freq;
             clock_add_to_group(i2c_bus_desc[i].bus_clock, 0);
             freq = clock_get_frequency(i2c_bus_desc[i].bus_clock);
-            config.i2c_mode = i2c_mode_normal;
+            if (freq == 0) {
+                // Avoid hanging boot if I2C clock is not ready
+                businfo[i].port = nullptr;
+                businfo[i].bus_clock = i2c_bus_desc[i].bus_clock;
+                businfo[i].soft = false;
+                continue;
+            }
+            config.i2c_mode = (i2c_bus_desc[i].speed >= 400*KHZ) ? i2c_mode_fast : i2c_mode_normal;
             config.is_10bit_addressing = false;
             stat = i2c_init_master(i2c_bus_desc[i].port, freq, &config);
             if (stat != status_success) {
-                while (1) {
-                    hpmhal.scheduler->delay(1000);
-                }
+                businfo[i].port = nullptr;
+                businfo[i].bus_clock = i2c_bus_desc[i].bus_clock;
+                businfo[i].soft = false;
+                continue;
             }
             businfo[i].port = i2c_bus_desc[i].port;
             businfo[i].bus_clock = i2c_bus_desc[i].bus_clock;
             businfo[i].soft = false;
-
         }
+    }
+    _initialized = true;
+}
+
+void I2CDeviceManager::init_singleton(void)
+{
+    if (i2c_mgr_singleton != nullptr) {
+        i2c_mgr_singleton->init();
     }
 }
 
@@ -100,6 +138,7 @@ I2CDeviceManager::get_device(uint8_t bus, uint8_t address,
                              bool use_smbus,
                              uint32_t timeout_ms)
 {
+    init_singleton();
     if (bus >= ARRAY_SIZE(i2c_bus_desc)) {
         return AP_HAL::OwnPtr<AP_HAL::I2CDevice>(nullptr);
     }
@@ -113,34 +152,32 @@ bool I2CDevice::transfer(const uint8_t *send, uint32_t send_len,
 #ifdef I2CDEBUG
     hpmhal.console->printf("%s:%d \n", __PRETTY_FUNCTION__, __LINE__);
 #endif
+    I2CDeviceManager::init_singleton();
     if (!bus.semaphore.check_owner()) {
         hpmhal.console->printf("I2C: not owner of 0x%x\n", (unsigned)get_bus_id());
         return false;
     }
 
-    bool result = false;
-    if (bus.soft) {
-        while(1) {
-            hpmhal.scheduler->delay(1000);
-        }
-        result = true; //TODO check all
-    } else {
-        hpm_stat_t stat;
-        if (send_len != 0 && send != nullptr) {
-            stat = i2c_master_write(bus.port, _address, (uint8_t*)send, send_len);
-            if (stat != status_success) {
-                result = false;
-            }
-        }
-        if (recv_len != 0 && recv != nullptr) {
-            stat = i2c_master_read(bus.port, _address, (uint8_t*)recv, recv_len);
-            if (stat != status_success) {
-                result = false;
-            }
-        }
+    if (bus.soft || bus.port == nullptr) {
+        return false;
     }
 
-    return result;
+    const bool do_send = (send_len != 0 && send != nullptr);
+    const bool do_recv = (recv_len != 0 && recv != nullptr);
+
+    if (do_send && do_recv) {
+        // Register read with repeated start
+        return i2c_master_address_read(bus.port, _address,
+                                       (uint8_t *)send, send_len,
+                                       recv, recv_len) == status_success;
+    }
+    if (do_send) {
+        return i2c_master_write(bus.port, _address, (uint8_t *)send, send_len) == status_success;
+    }
+    if (do_recv) {
+        return i2c_master_read(bus.port, _address, recv, recv_len) == status_success;
+    }
+    return false;
 }
 
 /*

@@ -428,15 +428,14 @@ void  Scheduler::_io_thread(void* arg)
     while (!sched->_initialized) {
         sched->delay_microseconds(1000);
     }
-    uint32_t last_sd_start_ms = AP_HAL::millis();
+    uint32_t last_sd_start_ms = 0;
     while (true) {
         sched->delay_microseconds(1000);
         // run registered IO processes
         sched->_run_io();
 
         if (!hpmhal.util->get_soft_armed()) {
-            // if sdcard hasn't mounted then retry it every 3s in the IO
-            // thread when disarmed
+            // Retry SD mount every 3s when disarmed (do not block boot/main)
             uint32_t now = AP_HAL::millis();
             if (now - last_sd_start_ms > 3000) {
                 last_sd_start_ms = now;
@@ -469,18 +468,16 @@ void  Scheduler::_uart_thread(void *arg)
     hpmhal.console->printf("%s:%d start \n", __PRETTY_FUNCTION__, __LINE__);
 #endif
     Scheduler *sched = (Scheduler *)arg;
-    while (!sched->_initialized) {
-        sched->delay_microseconds(2000);
-    }
-#ifdef SCHEDDEBUG
-    hpmhal.console->printf("%s:%d initialised\n", __PRETTY_FUNCTION__, __LINE__);
-#endif
+    // Tick UARTs/USB during setup as well — otherwise USB TX never drains
+    // while mount_sdcard()/setup() is blocked, and MAVLink cannot start.
     while (true) {
         sched->delay_microseconds(1000);
         for (uint8_t i=0; i<hpmhal.num_serial; i++) {
             hpmhal.serial(i)->_timer_tick();
         }
-        hpmhal.console->_timer_tick();
+        if (hpmhal.console != hpmhal.serial(0)) {
+            hpmhal.console->_timer_tick();
+        }
     }
 }
 
@@ -520,14 +517,19 @@ void Scheduler::print_main_loop_rate(void)
     }
 }
 
-void  Scheduler::_main_thread(void *arg)
+void Scheduler::_main_thread(void *arg)
 {
 #ifdef SCHEDDEBUG
     hpmhal.console->printf("%s:%d start\n", __PRETTY_FUNCTION__, __LINE__);
 #endif
     Scheduler *sched = (Scheduler *)arg;
 
-    mount_sdcard();
+    // SD bringup is unreliable on this board and can block forever.
+    // Skip auto-mount for now so USB MAVLink / LED can come up.
+    // mount_sdcard();
+    // Configure board GPIOs (RGB LEDs) before Notify; PixRacerLED skips
+    // pinMode when HAL_GPIO_LED_ON==0 (active-low).
+    hpmhal.gpio->init();
 #ifndef HAL_DISABLE_ADC_DRIVER
     hpmhal.analogin->init();
 #endif

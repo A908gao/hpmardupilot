@@ -31,6 +31,7 @@
 #include "AP_Proximity_Scripting.h"
 #include "AP_Proximity_LD06.h"
 #include "AP_Proximity_MR72_CAN.h"
+#include "AP_Proximity_MID360.h"
 
 
 #include <AP_Logger/AP_Logger.h>
@@ -247,6 +248,12 @@ void AP_Proximity::init()
             drivers[instance] = NEW_NOTHROW AP_Proximity_MR72_CAN(*this, state[instance], params[instance]);
             break;
 #endif  // AP_PROXIMITY_MR72_DRIVER_ENABLED
+#if AP_PROXIMITY_MID360_ENABLED
+        case Type::MID360:
+            state[instance].instance = instance;
+            drivers[instance] = NEW_NOTHROW AP_Proximity_MID360(*this, state[instance], params[instance]);
+            break;
+#endif
 #if AP_PROXIMITY_SITL_ENABLED
         case Type::SITL:
             state[instance].instance = instance;

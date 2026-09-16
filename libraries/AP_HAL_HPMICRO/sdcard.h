@@ -10,3 +10,4 @@ void sdcard_stop();
 void mount_sdcard();
 void unmount_sdcard();
 bool sdcard_retry();
+bool sdcard_init();
