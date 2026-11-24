@@ -20,6 +20,7 @@
 #if AP_COMPASS_IIS2MDC_ENABLED
 
 #include "AP_Compass_IIS2MDC.h"
+#include <GCS_MAVLink/GCS.h>
 
 // IIS2MDC Registers
 #define IIS2MDC_ADDR_CFG_REG_A  0x60
@@ -67,6 +68,7 @@ AP_Compass_IIS2MDC::AP_Compass_IIS2MDC(AP_HAL::OwnPtr<AP_HAL::Device> dev,
     : _dev(std::move(dev))
     , _rotation(rotation)
     , _force_external(force_external)
+    , _last_sample_ms(0)
 {
 }
 
@@ -79,6 +81,9 @@ bool AP_Compass_IIS2MDC::init()
     if (!check_whoami()) {
         return false;
     }
+
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "IIS2MDC: found bus_id=0x%x",
+                  unsigned(_dev->get_bus_id()));
 
     if (!_dev->write_register(IIS2MDC_ADDR_CFG_REG_A, MD_CONTINUOUS | ODR_100 | COMP_TEMP_EN)) {
         return false;
@@ -110,8 +115,15 @@ bool AP_Compass_IIS2MDC::init()
         set_external(_instance, true);
     }
 
-    // Enable 100HZ
+#if CONFIG_HAL_BOARD == HAL_BOARD_HPMICRO
+    /*
+     * HPM: DeviceBus I2C thread for GPS1 (APM_I2C:1) locks up ~20s after boot
+     * even with an empty callback. Sample from APM_TIMER instead.
+     */
+    hal.scheduler->register_timer_process(FUNCTOR_BIND_MEMBER(&AP_Compass_IIS2MDC::timer, void));
+#else
     _dev->register_periodic_callback(10000, FUNCTOR_BIND_MEMBER(&AP_Compass_IIS2MDC::timer, void));
+#endif
 
     return true;
 }
@@ -128,6 +140,18 @@ bool AP_Compass_IIS2MDC::check_whoami()
 
 void AP_Compass_IIS2MDC::timer()
 {
+#if CONFIG_HAL_BOARD == HAL_BOARD_HPMICRO
+    const uint32_t now_ms = AP_HAL::millis();
+    if ((now_ms - _last_sample_ms) < 20) {
+        return;
+    }
+    if (!_dev->get_semaphore()->take_nonblocking()) {
+        return;
+    }
+#else
+    /* DeviceBus already holds the semaphore */
+#endif
+
     struct PACKED {
         uint8_t xout0;
         uint8_t xout1;
@@ -142,17 +166,19 @@ void AP_Compass_IIS2MDC::timer()
     const float range_scale = 100.f / 65.535f; // +/- 50,000 milligauss, 16bit
 
     uint8_t status = 0;
-    if (!_dev->read_registers(IIS2MDC_ADDR_STATUS_REG, &status, 1)) {
+    if (!_dev->read_registers(IIS2MDC_ADDR_STATUS_REG, &status, 1) ||
+        !(status & IIS2MDC_STATUS_REG_READY) ||
+        !_dev->read_registers(IIS2MDC_ADDR_OUTX_L_REG, (uint8_t *)&buffer, sizeof(buffer))) {
+#if CONFIG_HAL_BOARD == HAL_BOARD_HPMICRO
+        _dev->get_semaphore()->give();
+#endif
         return;
     }
 
-    if (!(status & IIS2MDC_STATUS_REG_READY)) {
-        return;
-    }
-
-    if (!_dev->read_registers(IIS2MDC_ADDR_OUTX_L_REG, (uint8_t *) &buffer, sizeof(buffer))) {
-        return;
-    }
+#if CONFIG_HAL_BOARD == HAL_BOARD_HPMICRO
+    _last_sample_ms = now_ms;
+    _dev->get_semaphore()->give();
+#endif
 
     const int16_t x = ((buffer.xout1 << 8) | buffer.xout0);
     const int16_t y = ((buffer.yout1 << 8) | buffer.yout0);

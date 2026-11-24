@@ -7,6 +7,8 @@
 #include "AP_HAL_HPMICRO/Scheduler.h"
 #include "AP_HAL_HPMICRO/AnalogIn.h"
 #include "AP_HAL_HPMICRO/RCInput.h"
+#include "IOMCUProbe.h"
+#include "ETHProbe.h"
 #include "AP_Math/AP_Math.h"
 #include "sdcard.h"
 #include "FreeRTOS.h"
@@ -15,6 +17,8 @@
 #include <AP_Scheduler/AP_Scheduler.h>
 #include <stdio.h>
 #include "board.h"
+#include "hpm_ppor_drv.h"
+#include "MemGuard.h"
 
 // #define SCHEDULERDEBUG 1
 
@@ -35,6 +39,36 @@ static const AP_HAL::HAL& hpmhal = AP_HAL::get_HAL();
         hpmhal.console->vprintf(fmt, args);
         va_end(args);
         return 0;
+    }
+
+    /*
+     * Stack overflow: never silent-hang. Print task name, flush, soft-reset
+     * so the FC recovers instead of looking "dead" with a corrupted stack.
+     */
+    void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+    {
+        (void)xTask;
+        taskDISABLE_INTERRUPTS();
+        if (hpmhal.console) {
+            hpmhal.console->printf("\nSTACK_OVERFLOW task=%s\n",
+                                   pcTaskName ? pcTaskName : "?");
+            hpmhal.console->flush();
+        }
+        for (volatile uint32_t i = 0; i < 2000000; i++) {
+        }
+        ppor_sw_reset(HPM_PPOR, 10);
+        for (;;) {
+        }
+    }
+
+    void vApplicationMallocFailedHook(void)
+    {
+        if (hpmhal.console) {
+            hpmhal.console->printf("\nMALLOC_FAILED free=%u min=%u\n",
+                                   (unsigned)xPortGetFreeHeapSize(),
+                                   (unsigned)xPortGetMinimumEverFreeHeapSize());
+            hpmhal.console->flush();
+        }
     }
 
 }
@@ -177,41 +211,52 @@ bool Scheduler::thread_create(AP_HAL::MemberProc proc, const char *name, uint32_
     static const struct {
         priority_base base;
         uint8_t p;
+        bool keep_comm_band; /* ignore caller offset — stay in COMM_PRIO */
     } priority_map[] = {
-        { PRIORITY_BOOST, IO_PRIO},
-        { PRIORITY_MAIN, MAIN_PRIO},
-        { PRIORITY_SPI, SPI_PRIORITY},
-        { PRIORITY_I2C, I2C_PRIORITY},
-        { PRIORITY_CAN, IO_PRIO},
-        { PRIORITY_TIMER, TIMER_PRIO},
-        { PRIORITY_RCIN, RCIN_PRIO},
-        { PRIORITY_IO, IO_PRIO},
-        { PRIORITY_UART, UART_PRIO},
-        { PRIORITY_NET, WIFI_PRIO1},
-        { PRIORITY_STORAGE, STORAGE_PRIO},
-        { PRIORITY_SCRIPTING, UART_PRIO},
+        { PRIORITY_BOOST,   IO_PRIO,      false },
+        { PRIORITY_MAIN,    MAIN_PRIO,    false },
+        { PRIORITY_SPI,     SPI_PRIORITY, false },
+        { PRIORITY_I2C,     I2C_PRIORITY, true  },
+        { PRIORITY_CAN,     CAN_PRIO,     true  },
+        { PRIORITY_TIMER,   TIMER_PRIO,   false },
+        { PRIORITY_RCIN,    RCIN_PRIO,    false },
+        { PRIORITY_IO,      IO_PRIO,      false },
+        { PRIORITY_UART,    UART_PRIO,    true  },
+        { PRIORITY_NET,     WIFI_PRIO1,   true  },
+        { PRIORITY_STORAGE, STORAGE_PRIO, false },
+        { PRIORITY_SCRIPTING, UART_PRIO,  false },
     };
     for (uint8_t i=0; i<ARRAY_SIZE(priority_map); i++) {
         if (priority_map[i].base == base) {
 #ifdef SCHEDDEBUG
             hpmhal.console->printf("%s:%d \n", __PRETTY_FUNCTION__, __LINE__);
 #endif
-            thread_priority = constrain_int16(priority_map[i].p + priority, 1, 25);
+            if (priority_map[i].keep_comm_band) {
+                /* UART/I2C/CAN/NET: equal priority → time-slice, no preemption */
+                thread_priority = priority_map[i].p;
+            } else {
+                thread_priority = constrain_int16(priority_map[i].p + priority, 1, 25);
+            }
             break;
         }
     }
-    // chibios has a 'thread working area', we just another 1k.
-    #define EXTRA_THREAD_SPACE 1024
-    uint32_t actual_stack_size = requested_stack_size+EXTRA_THREAD_SPACE;
+    // AP_HAL stack sizes are bytes; FreeRTOS wants depth in StackType_t words.
+    // Match ChibiOS: request bytes + small EXTRA (see MemMap.h), then convert.
+    uint32_t stack_bytes = requested_stack_size + HPM_THREAD_EXTRA_BYTES;
+    if (stack_bytes < 2048) {
+        stack_bytes = 2048;
+    }
+    const uint32_t actual_stack_words = stack_bytes / sizeof(StackType_t);
 
     tskTaskControlBlock* xhandle;
-    BaseType_t xReturned = xTaskCreate(thread_create_trampoline, name, actual_stack_size, tproc, thread_priority, &xhandle);
+    BaseType_t xReturned = xTaskCreate(thread_create_trampoline, name, actual_stack_words, tproc, thread_priority, &xhandle);
     if (xReturned != pdPASS) {
         free(tproc);
-        hpmhal.console->printf("create thread failed %ld\n", xReturned);
+        hpmhal.console->printf("create thread failed %s ret=%ld free=%u\n",
+                               name, xReturned, (unsigned)xPortGetFreeHeapSize());
         return false;
     }
-
+    MemGuard::note_task_created(name, actual_stack_words);
     return true;
 }
 
@@ -287,6 +332,22 @@ void  Scheduler::register_timer_failsafe(AP_HAL::Proc failsafe, uint32_t period_
 
 void Scheduler::reboot(bool hold_in_bootloader)
 {
+    (void)hold_in_bootloader;
+    /*
+     * Must flush + soft-reset so CAN_P*_DRIVER topology re-inits. Keep a
+     * short drain so GCS sees the ACK; then PPOR reset (empty reboot was a
+     * no-op and left D2–D4 UC_* missing after param changes).
+     */
+    if (hpmhal.console) {
+        hpmhal.console->printf("Rebooting...\n");
+        hpmhal.console->flush();
+    }
+    for (uint8_t i = 0; i < 20; i++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    ppor_sw_reset(HPM_PPOR, 10);
+    for (;;) {
+    }
 }
 
 bool  Scheduler::in_main_thread() const
@@ -429,14 +490,20 @@ void  Scheduler::_io_thread(void* arg)
         sched->delay_microseconds(1000);
     }
     uint32_t last_sd_start_ms = 0;
+    uint32_t last_mem_ms = 0;
     while (true) {
         sched->delay_microseconds(1000);
         // run registered IO processes
         sched->_run_io();
 
+        const uint32_t now = AP_HAL::millis();
+        if (now - last_mem_ms >= 1000) {
+            last_mem_ms = now;
+            MemGuard::periodic();
+        }
+
         if (!hpmhal.util->get_soft_armed()) {
             // Retry SD mount every 3s when disarmed (do not block boot/main)
-            uint32_t now = AP_HAL::millis();
             if (now - last_sd_start_ms > 3000) {
                 last_sd_start_ms = now;
                 sdcard_retry();
@@ -537,6 +604,14 @@ void Scheduler::_main_thread(void *arg)
 
     sched->callbacks->setup();
 
+#if HAL_HPM_IOMCU_PROBE
+    // Thin UART5 PAGE_CONFIG probe; keeps HAL_WITH_IO_MCU=0.
+    IOMCUProbe::start();
+#endif
+#if HAL_HPM_ETH_PROBE
+    ETHProbe::start();
+#endif
+
     sched->set_system_initialized();
 
 #ifdef SCHEDDEBUG
@@ -544,11 +619,17 @@ void Scheduler::_main_thread(void *arg)
 #endif
     while (true) {
         sched->callbacks->loop();
-        // run stats periodically
+#if HAL_HPM_IOMCU_PROBE
+        IOMCUProbe::service();
+#endif
+#if HAL_HPM_ETH_PROBE
+        ETHProbe::service();
+#endif
+        // run stats periodically (never on USB console — corrupts MAVLink)
 #ifdef SCHEDDEBUG
         sched->print_stats();
-#endif
         sched->print_main_loop_rate();
+#endif
     }
 }
 

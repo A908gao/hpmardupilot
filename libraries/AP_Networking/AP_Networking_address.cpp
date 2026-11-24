@@ -6,9 +6,30 @@
 
 #if AP_NETWORKING_ENABLED
 
-#include <arpa/inet.h>
 #include "AP_Networking.h"
+#if AP_NETWORKING_SOCKETS_ENABLED
 #include <AP_HAL/utility/Socket.h>
+#endif
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// host-order IPv4 from dotted string (no libc/lwIP dependency)
+static uint32_t ipv4_str_to_host(const char *ipstr)
+{
+#if AP_NETWORKING_SOCKETS_ENABLED
+    return SocketAPM::inet_str_to_addr(ipstr);
+#else
+    unsigned a=0, b=0, c=0, d=0;
+    if (sscanf(ipstr, "%u.%u.%u.%u", &a, &b, &c, &d) != 4) {
+        return 0;
+    }
+    if (a > 255 || b > 255 || c > 255 || d > 255) {
+        return 0;
+    }
+    return (a << 24) | (b << 16) | (c << 8) | d;
+#endif
+}
 
 const AP_Param::GroupInfo AP_Networking_IPV4::var_info[] = {
     // @Param: 0
@@ -49,7 +70,7 @@ const AP_Param::GroupInfo AP_Networking_IPV4::var_info[] = {
 AP_Networking_IPV4::AP_Networking_IPV4(const char *default_addr)
 {
     AP_Param::setup_object_defaults(this, var_info);
-    set_default_uint32(SocketAPM::inet_str_to_addr(default_addr));
+    set_default_uint32(ipv4_str_to_host(default_addr));
 }
 
 uint32_t AP_Networking_IPV4::get_uint32(void) const
@@ -73,7 +94,16 @@ void AP_Networking_IPV4::set_default_uint32(uint32_t v)
 const char* AP_Networking_IPV4::get_str()
 {
     const auto ip = get_uint32();
+#if AP_NETWORKING_SOCKETS_ENABLED
     return SocketAPM::inet_addr_to_str(ip, strbuf, sizeof(strbuf));
+#else
+    snprintf(strbuf, sizeof(strbuf), "%u.%u.%u.%u",
+             unsigned((ip >> 24) & 0xFF),
+             unsigned((ip >> 16) & 0xFF),
+             unsigned((ip >> 8) & 0xFF),
+             unsigned(ip & 0xFF));
+    return strbuf;
+#endif
 }
 
 #endif // AP_NETWORKING_ENABLED

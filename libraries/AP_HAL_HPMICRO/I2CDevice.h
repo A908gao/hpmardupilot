@@ -39,7 +39,11 @@ public:
     I2CBus():DeviceBus(Scheduler::I2C_PRIORITY) {};
     I2C_Type *port;
     clock_name_t bus_clock;
+    uint32_t speed;
+    uint8_t bus_num;
     bool soft;
+
+    void recover(void);
 };
 class I2CDevice : public AP_HAL::I2CDevice {
 public:

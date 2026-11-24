@@ -313,7 +313,7 @@ static const uint8_t other_speed_config_descriptor_fs[] = {
 static const char *string_descriptors[] = {
     (const char[]){ 0x09, 0x04 }, /* Langid */
     "HPMicro",                    /* Manufacturer */
-    "HPMicro CDC DEMO",           /* Product */
+    "HPM Ardupilot",              /* Product */
     "2024051703",                 /* Serial Number */
 };
 

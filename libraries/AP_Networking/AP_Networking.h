@@ -8,7 +8,9 @@
 
 #include "AP_Networking_address.h"
 #include "AP_Networking_Backend.h"
+#if AP_NETWORKING_CAN_MCAST_ENABLED
 #include "AP_Networking_CAN.h"
+#endif
 #include <AP_SerialManager/AP_SerialManager.h>
 #include <AP_HAL/utility/RingBuffer.h>
 
@@ -19,6 +21,7 @@
 // declare backend classes
 class AP_Networking_Backend;
 class AP_Networking_ChibiOS;
+class AP_Networking_HPM;
 
 class SocketAPM;
 
@@ -27,6 +30,7 @@ class AP_Networking
 public:
     friend class AP_Networking_Backend;
     friend class AP_Networking_ChibiOS;
+    friend class AP_Networking_HPM;
     friend class AP_Networking_PPP;
     friend class AP_Vehicle;
     friend class Networking_Periph;

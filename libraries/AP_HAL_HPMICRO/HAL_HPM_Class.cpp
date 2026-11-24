@@ -24,16 +24,18 @@
 #if AP_SIM_ENABLED
 #include <AP_HAL/SIMState.h>
 #endif
-static Empty::UARTDriver serial1Driver;
-static HPMicro::UARTDriver serial2Driver(2);
-static Empty::UARTDriver serial3Driver;
-static Empty::UARTDriver serial4Driver;
-static Empty::UARTDriver serial5Driver;
-static Empty::UARTDriver serial6Driver;
-static Empty::UARTDriver serial7Driver;
+// uart_desc[] index from hwdef HPMICRO_SERIAL order (NOT SERIALn_):
+//   0:UART5/SERIAL7  1:UART0/SERIAL9  2:UART8/SERIAL1  3:UART9/SERIAL2
+//   4:UART3/SERIAL3  5:UART2/SERIAL4  6:UART6/SERIAL5  7:UART1/SERIAL6
+static HPMicro::UARTDriver serial1Driver(2); // TELEM1  UART8
+static HPMicro::UARTDriver serial2Driver(3); // TELEM2  UART9
+static HPMicro::UARTDriver serial3Driver(4); // GPS1    UART3
+static HPMicro::UARTDriver serial4Driver(5); // GPS2    UART2
+static HPMicro::UARTDriver serial5Driver(6); // TELEM3  UART6
+static HPMicro::UARTDriver serial6Driver(7); // EXT2    UART1
+static HPMicro::UARTDriver serial7Driver(0); // RC/IO   UART5
 static Empty::UARTDriver serial8Driver;
-static Empty::UARTDriver serial9Driver;
-// UART0 debug console (hwdef uart_desc index 1). Used as SERIAL0 only when USB VCP is off.
+// UART0 debug (uart_desc[1]) — SERIAL9 when USB owns SERIAL0
 static HPMicro::UARTDriver uart0Driver(1);
 #ifdef HAL_WITH_USB_VCP
 // USB CDC is SERIAL0 + console (same pattern as ChibiOS boards).
@@ -41,6 +43,7 @@ static HPMicro::USBVCPDriver VCPConsoleDriver(0);
 #else
 static HPMicro::UARTDriver serialConsoleDriver(1, 115200, true);
 #endif
+static Empty::UARTDriver serial9Driver;
 #if HAL_WITH_DSP
 static Empty::DSP dspDriver;
 #endif

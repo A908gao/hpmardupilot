@@ -10,6 +10,7 @@
 #include "HAL_HPM_Namespace.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "MemMap.h"
 
 #define HPM_SCHEDULER_MAX_TIMER_PROCS 10
 #define HPM_SCHEDULER_MAX_IO_PROCS 10
@@ -46,28 +47,42 @@ public:
     static void osalSysUnlock(void);
     bool thread_create(AP_HAL::MemberProc, const char *name, uint32_t stack_size, priority_base base, int8_t priority) override;
 
-    static const int SPI_PRIORITY = 24; //      if your primary imu is spi, this should be above the i2c value, spi is better.
-    static const int MAIN_PRIO    = 24; //	cpu0: we want scheduler running at full tilt.
-    static const int I2C_PRIORITY = 5;  //      if your primary imu is i2c, this should be above the spi value, i2c is not preferred.
-    static const int TIMER_PRIO   = 23; //dont make 24. a low priority mere might cause wifi thruput to suffer
+    /*
+      Priority layout (FreeRTOS: higher number = higher priority):
+        MAIN/SPI 24  — flight loop + IMU (may preempt everything below)
+        TIMER    23  — high-rate timers
+        COMM     18  — UART / I2C / CAN / Ethernet share ONE band so they
+                       round-robin and do not preempt each other. Each still
+                       has its own task + stack (see MemMap.h).
+        RCOUT    10
+        RCIN/IO   5
+        STORAGE   4
+     */
+    static const int SPI_PRIORITY = 24;
+    static const int MAIN_PRIO    = 24;
+    static const int TIMER_PRIO   = 23;
+    static const int COMM_PRIO    = 18; /* shared UART+I2C+CAN+NET band */
+    static const int I2C_PRIORITY = COMM_PRIO;
+    static const int CAN_PRIO     = COMM_PRIO;
+    static const int UART_PRIO    = COMM_PRIO;
+    static const int WIFI_PRIO1   = COMM_PRIO; /* PRIORITY_NET base */
+    static const int WIFI_PRIO2   = COMM_PRIO;
     static const int RCIN_PRIO    = 5;
     static const int RCOUT_PRIO   = 10;
-    static const int WIFI_PRIO1   = 20; //cpu1:
-    static const int WIFI_PRIO2   = 12; //cpu1:
-    static const int UART_PRIO    = 23; //dont make 24, scheduler suffers a bit. cpu1: a low priority mere might cause wifi thruput to suffer, as wifi gets passed its data frim the uart subsustem in _writebuf/_readbuf
     static const int IO_PRIO      = 5;
     static const int STORAGE_PRIO = 4;
 
-    static const int TIMER_SS     = 1024*8;
-    static const int MAIN_SS      = 1024*8;
-    static const int RCIN_SS      = 1024*8;
-    static const int RCOUT_SS     = 1024*8;
-    static const int WIFI_SS1     = 1024*8;
-    static const int WIFI_SS2     = 1024*8;
-    static const int UART_SS      = 1024*8;
-    static const int DEVICE_SS    = 1024*8;     // DEVICEBUS/s
-    static const int IO_SS        = 1024*8;   // APM_IO
-    static const int STORAGE_SS   = 1024*8;     // APM_STORAGE
+    /* FreeRTOS depth in words — sizes from MemMap.h (ChibiOS byte WA → words). */
+    static const int TIMER_SS     = (int)HPM_TIMER_STACK_WORDS;
+    static const int MAIN_SS      = (int)HPM_MAIN_STACK_WORDS;
+    static const int RCIN_SS      = (int)HPM_RCIN_STACK_WORDS;
+    static const int RCOUT_SS     = (int)HPM_RCOUT_STACK_WORDS;
+    static const int WIFI_SS1     = (int)HPM_UART_STACK_WORDS; /* legacy */
+    static const int WIFI_SS2     = (int)HPM_IO_STACK_WORDS;
+    static const int UART_SS      = (int)HPM_UART_STACK_WORDS;
+    static const int DEVICE_SS    = (int)HPM_DEVICE_STACK_WORDS;
+    static const int IO_SS        = (int)HPM_IO_STACK_WORDS;
+    static const int STORAGE_SS   = (int)HPM_STORAGE_STACK_WORDS;
 
 private:
     AP_HAL::HAL::Callbacks *callbacks;

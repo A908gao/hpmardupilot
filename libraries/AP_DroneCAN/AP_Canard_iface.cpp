@@ -22,7 +22,7 @@ DEFINE_TRANSFER_OBJECT_HEADS();
 DEFINE_TRANSFER_OBJECT_SEMAPHORES();
 
 #if AP_TEST_DRONECAN_DRIVERS
-CanardInterface* CanardInterface::canard_ifaces[] = {nullptr, nullptr, nullptr};
+CanardInterface* CanardInterface::canard_ifaces[HAL_NUM_CAN_IFACES];
 CanardInterface CanardInterface::test_iface{2};
 uint8_t test_node_mem_area[1024];
 HAL_Semaphore test_iface_sem;

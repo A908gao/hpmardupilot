@@ -93,6 +93,9 @@ public:
 #if AP_RCPROTOCOL_RADIO_ENABLED
         RADIO = 19,
 #endif
+#if AP_RCPROTOCOL_IOMCU_ENABLED
+        IOMCU = 20,
+#endif
         NONE    //last enum always is None
     };
 
@@ -199,6 +202,9 @@ public:
 #endif
 #if AP_RCPROTOCOL_RADIO_ENABLED
         case RADIO:
+#endif
+#if AP_RCPROTOCOL_IOMCU_ENABLED
+        case IOMCU:
 #endif
         case NONE:
             return false;

@@ -24,10 +24,13 @@
 #define BOARD_NAME          "fmuv6x_hpm"
 #define BOARD_UF2_SIGNATURE (0x0A4D5048UL)
 
-/* RCOutput PWM groups */
+/* RCOutput PWM groups — CH1-4 PWM3@mot3, CH5-8 PWM1@mot1 via TRGM1 */
+#ifndef HAL_PWM_GROUPS
 #define HAL_PWM_GROUPS {\
-    { .mcpwm_group_id = 0, .base = HPM_PWM3, .clock = clock_mot2, .rc_frequency = 50, .ch_mask = 0xFF, }, \
+    { .mcpwm_group_id = 0, .base = HPM_PWM3, .clock = clock_mot3, .rc_frequency = 50, .ch_mask = 0x0F, }, \
+    { .mcpwm_group_id = 1, .base = HPM_PWM1, .clock = clock_mot1, .rc_frequency = 50, .ch_mask = 0xF0, }, \
 }
+#endif
 
 #define SEC_CORE_IMG_START ILM_LOCAL_BASE
 
@@ -152,7 +155,8 @@
 #define BOARD_SDRAM_REFRESH_IN_MS    (64UL)
 
 #define BOARD_FLASH_BASE_ADDRESS (0x80000000UL)
-#define BOARD_FLASH_SIZE         (16 << 20)
+/* HPM6754IAN2: 4MB on-chip flash (not EVK external 16MB NOR) */
+#define BOARD_FLASH_SIZE         (4 << 20)
 
 /* lcd section */
 #define BOARD_LCD_BASE                 HPM_LCDC
@@ -324,7 +328,7 @@
 #define BOARD_PDM_SINGLE_CHANNEL_MASK (1U)
 #define BOARD_PDM_DUAL_CHANNEL_MASK   (0x11U)
 
-/* enet section */
+/* enet section — fmuv6x_hpm: ENET0 RMII + LAN8742A */
 #define BOARD_ENET_RGMII_RST_GPIO       HPM_GPIO0
 #define BOARD_ENET_RGMII_RST_GPIO_INDEX GPIO_DO_GPIOF
 #define BOARD_ENET_RGMII_RST_GPIO_PIN   (0U)
@@ -334,13 +338,23 @@
 
 #define BOARD_ENET_RGMII_PTP_CLOCK (clock_ptp0)
 
-#define BOARD_ENET_RMII_RST_GPIO       HPM_GPIO0
-#define BOARD_ENET_RMII_RST_GPIO_INDEX GPIO_DO_GPIOE
-#define BOARD_ENET_RMII_RST_GPIO_PIN   (26U)
-#define BOARD_ENET_RMII                HPM_ENET1
+/* RMII on ENET0; VDD_3V3_ETH_EN = PC13 (active high). No dedicated PHY nRST GPIO. */
+#define BOARD_ENET_RMII_PWR_GPIO       HPM_GPIO0
+#define BOARD_ENET_RMII_PWR_GPIO_INDEX GPIO_DO_GPIOC
+#define BOARD_ENET_RMII_PWR_GPIO_PIN   (13U)
+#define BOARD_ENET_RMII_RST_GPIO       BOARD_ENET_RMII_PWR_GPIO
+#define BOARD_ENET_RMII_RST_GPIO_INDEX BOARD_ENET_RMII_PWR_GPIO_INDEX
+#define BOARD_ENET_RMII_RST_GPIO_PIN   BOARD_ENET_RMII_PWR_GPIO_PIN
+#define BOARD_ENET_RMII                HPM_ENET0
+/* 1 = MAC outputs 50MHz on PE31; 0 = PHY provides REFCLK into PE31 */
+#ifndef BOARD_ENET_RMII_INT_REF_CLK
 #define BOARD_ENET_RMII_INT_REF_CLK    (1U)
+#endif
+#ifndef BOARD_ENET_RMII_PHY_ADDR
+#define BOARD_ENET_RMII_PHY_ADDR       (0U)
+#endif
 
-#define BOARD_ENET_RMII_PTP_CLOCK (clock_ptp1)
+#define BOARD_ENET_RMII_PTP_CLOCK (clock_ptp0)
 
 /* ADC section */
 #define BOARD_APP_ADC12_NAME     "ADC0"

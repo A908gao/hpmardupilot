@@ -83,8 +83,11 @@ uint8_t CANIface::next_interface;
 // mapping from logical interface to physical. First physical is 0, first logical is 0
 static constexpr uint8_t can_interfaces[HAL_NUM_CAN_IFACES] = { HAL_CAN_INTERFACE_LIST };
 
-// mapping from physical interface back to logical. First physical is 0, first logical is 0
-static constexpr int8_t can_iface_to_idx[3] = { HAL_CAN_INTERFACE_REV_LIST };
+// mapping from physical interface back to logical (-1 = unused). Phys index 0..3 on HPM6700
+#ifndef HAL_CAN_INTERFACE_REV_SIZE
+#define HAL_CAN_INTERFACE_REV_SIZE 4
+#endif
+static constexpr int8_t can_iface_to_idx[HAL_CAN_INTERFACE_REV_SIZE] = { HAL_CAN_INTERFACE_REV_LIST };
 
 #define REG_SET_TIMEOUT 250 // if it takes longer than 250ms for setting a register we have failed
 
@@ -98,6 +101,9 @@ static inline bool driver_initialised(uint8_t iface_index)
 
 static inline void handleCANInterrupt(uint8_t phys_index)
 {
+    if (phys_index >= HAL_CAN_INTERFACE_REV_SIZE) {
+        return;
+    }
     const int8_t iface_index = can_iface_to_idx[phys_index];
     if (iface_index < 0 || iface_index >= HAL_NUM_CAN_IFACES) {
         return;
@@ -105,18 +111,33 @@ static inline void handleCANInterrupt(uint8_t phys_index)
     CAN_Type *can = (CAN_Type *)can_bus_desc[iface_index].base;
     uint8_t tx_rx_flags = can_get_tx_rx_flags(can);
     uint8_t error_flags = can_get_error_interrupt_flags(can);
-    /* Handle TX/RX flags */
-    if ((tx_rx_flags & CAN_EVENT_RECEIVE) != 0U) {
 
-        while (can_is_data_available_in_receive_buffer(can)) {
-            
+    // Drain RX before any null-deref; SDK leaves error frames in RBUF without RREL
+    // which previously spun forever here and froze the whole MCU (seen on noisy CAN3).
+    if ((tx_rx_flags & CAN_EVENT_RECEIVE) != 0U) {
+        uint8_t guard = 32;
+        while (guard-- && can_is_data_available_in_receive_buffer(can)) {
+            if (!driver_initialised(iface_index)) {
+                can_release_receive_buffer(can);
+                break;
+            }
             can_ifaces[iface_index]->handleRxInterrupt(0);
+        }
+        // If still non-empty after guard, force-release one slot to avoid IRQ storm
+        if (can_is_data_available_in_receive_buffer(can)) {
+            can_release_receive_buffer(can);
         }
         can_clear_tx_rx_flags(can, CAN_EVENT_RECEIVE);
     }
 
+    if (!driver_initialised(iface_index)) {
+        can_clear_tx_rx_flags(can, tx_rx_flags);
+        can_clear_error_interrupt_flags(can, error_flags);
+        return;
+    }
+
     if ((tx_rx_flags & (CAN_EVENT_TX_PRIMARY_BUF | CAN_EVENT_TX_SECONDARY_BUF )) != 0) {
-        can_clear_tx_rx_flags(can, CAN_EVENT_TX_PRIMARY_BUF);
+        can_clear_tx_rx_flags(can, CAN_EVENT_TX_PRIMARY_BUF | CAN_EVENT_TX_SECONDARY_BUF);
         uint64_t timestamp_us = AP_HAL::micros64();
         if (timestamp_us > 0) {
             timestamp_us--;
@@ -129,14 +150,9 @@ static inline void handleCANInterrupt(uint8_t phys_index)
         can_ifaces[iface_index]->handleBusOffInterrupt();
     }
 
-    /* Handle error flags */
     if ((error_flags & (CAN_ERRINT_EPIE_MASK | CAN_ERRINT_ALIE_MASK | CAN_ERRINT_BEIE_MASK)) != 0U) {
         can_clear_error_interrupt_flags(can, error_flags);
         can_ifaces[iface_index]->handleBusOffInterrupt();
-    }
-    if (!driver_initialised(iface_index)) {
-        //Just return
-        return;
     }
     can_ifaces[iface_index]->pollErrorFlagsFromISR();
 }
@@ -155,7 +171,7 @@ CANIface::CANIface(uint8_t index) :
     }
     HPM_IOC->PAD[can_bus_desc[index].rx_ioc].FUNC_CTL = can_bus_desc[index].rx_af;
     HPM_IOC->PAD[can_bus_desc[index].tx_ioc].FUNC_CTL = can_bus_desc[index].tx_af;
-    HPM_BIOC->PAD[can_bus_desc[index].tx_ioc].FUNC_CTL = can_bus_desc[index].tx_baf;
+    // BIOC only applies to PZ domain; never poke BIOC with AF=0 on PA/PB pads
     if (can_bus_desc[index].rx_baf) {
         HPM_BIOC->PAD[can_bus_desc[index].rx_ioc].FUNC_CTL = can_bus_desc[index].rx_baf;
     }
@@ -170,7 +186,7 @@ CANIface::CANIface(uint8_t index) :
     }
     clock_set_source_divider(can_bus_desc[index].clock, clk_src_pll1_clk1, 5);
     clock_add_to_group(can_bus_desc[index].clock, 0);
-    intc_m_enable_irq(can_bus_desc[index].irqn);
+    // Do not enable NVIC here — wait until can_init() succeeds in init()
 }
 
 // constructor suitable for array
@@ -309,7 +325,7 @@ bool CANIface::init(const uint32_t bitrate, const uint32_t fdbitrate, const Oper
 {
     uint32_t can_src_clk_freq;
     Debug("Bitrate %lu mode %d", static_cast<unsigned long>(bitrate), static_cast<int>(mode));
-    if (self_index_ > HAL_NUM_CAN_IFACES) {
+    if (self_index_ >= HAL_NUM_CAN_IFACES) {
         Debug("CAN drv init failed");
         return false;
     }
@@ -322,14 +338,14 @@ bool CANIface::init(const uint32_t bitrate, const uint32_t fdbitrate, const Oper
 
     bitrate_ = bitrate;
     mode_ = mode;
-    //Only do it once
-    //Doing it second time will reset the previously initialised bus
-    if (!clock_init_) {
+    // Each physical CAN needs its own clock setup (static flag was wrong for multi-bus)
+    {
         CriticalSectionLocker lock;
         can_src_clk_freq = board_init_can_clock((CAN_Type *)can_bus_desc[self_index_].base);
+        if (can_src_clk_freq == 0) {
+            can_src_clk_freq = clock_get_frequency(clock_can[self_index_]);
+        }
         clock_init_ = true;
-    } else {
-        can_src_clk_freq = clock_get_frequency(clock_can[self_index_]);
     }
 
     // Setup FDCAN for configuration mode and disable all interrupts
@@ -339,7 +355,10 @@ bool CANIface::init(const uint32_t bitrate, const uint32_t fdbitrate, const Oper
         can_get_default_config(&can_config);
         can_config.baudrate = bitrate;
         can_config.mode = can_mode_normal;
-        can_config.irq_txrx_enable_mask = CAN_EVENT_RECEIVE/* | CAN_EVENT_TX_PRIMARY_BUF | CAN_EVENT_TX_SECONDARY_BUF*/;
+        /* RX + TX-complete: without TX IRQs, pending mailboxes never complete and the bus looks dead */
+        can_config.irq_txrx_enable_mask = CAN_EVENT_RECEIVE |
+                                          CAN_EVENT_TX_PRIMARY_BUF |
+                                          CAN_EVENT_TX_SECONDARY_BUF;
         board_init_can(can_);
         hpm_stat_t status = can_init(can_, &can_config, can_src_clk_freq);
         if (status != status_success) {
@@ -440,6 +459,9 @@ bool CANIface::readRxFIFO(uint8_t fifo_index)
     memset(&rx_buf, 0, sizeof(rx_buf));
     status = can_read_received_message(can_, &rx_buf);
     if (status != status_success) {
+        // hpm_can_drv leaves error frames queued without RREL; release so ISR cannot spin
+        can_release_receive_buffer(can_);
+        stats.rx_errors++;
         return false;
     }
     // Read the frame contents
@@ -557,18 +579,13 @@ bool CANIface::isRxBufferEmpty() const
 
 void CANIface::clearErrors()
 {
-    if (_detected_bus_off) {
-        //Try Recovering from BusOff
-        //While in Bus off mode the CAN Peripheral is put
-        //into INIT mode, when we ask Peripheral to get out
-        //of INIT mode, the bit stream processor (BSP) synchronizes
-        //itself to the data transfer on the CAN bus by
-        //waiting for the occurrence of a sequence of 11 consecutive
-        //recessive bits (Bus_Idle) before it can take part in bus
-        //activities and start the message transfer
-        stats.num_busoff_err++;
-        _detected_bus_off = false;
+    if (!_detected_bus_off) {
+        return;
     }
+    // Only clear SW flag here. Full bus-off HW recovery needs a careful re-init;
+    // poking RESET from select() path previously risked early faults.
+    stats.num_busoff_err++;
+    _detected_bus_off = false;
 }
 
 void CANIface::checkAvailable(bool& read, bool& write, const AP_HAL::CANFrame* pending_tx) const
@@ -618,50 +635,23 @@ bool CANIface::select(bool &read, bool &write,
 void CANIface::get_stats(ExpandingString &str)
 {
     CriticalSectionLocker lock;
-    // str.printf("------- Clock Config -------\n"
-    //            "CAN_CLK_FREQ:   %luMHz\n"
-    //            "Std Timings: bitrate=%lu presc=%u\n"
-    //            "sjw=%u bs1=%u bs2=%u sample_point=%f%%\n"
-    //            "FD Timings:  bitrate=%lu presc=%u\n"
-    //            "sjw=%u bs1=%u bs2=%u sample_point=%f%%\n"
-    //            "------- CAN Interface Stats -------\n"
-    //            "tx_requests:    %lu\n"
-    //            "tx_rejected:    %lu\n"
-    //            "tx_overflow:    %lu\n"
-    //            "tx_success:     %lu\n"
-    //            "tx_timedout:    %lu\n"
-    //            "tx_abort:       %lu\n"
-    //            "rx_received:    %lu\n"
-    //            "rx_overflow:    %lu\n"
-    //            "rx_errors:      %lu\n"
-    //            "num_busoff_err: %lu\n"
-    //            "num_events:     %lu\n"
-    //            "ECR:            %lx\n"
-    //            "fdf_rx:         %lu\n"
-    //            "fdf_tx_req:     %lu\n"
-    //            "fdf_tx:         %lu\n",
-    //            STM32_FDCANCLK/1000000UL,
-    //            _bitrate, unsigned(timings.prescaler),
-    //            unsigned(timings.sjw), unsigned(timings.bs1),
-    //            unsigned(timings.bs2), timings.sample_point_permill/10.0f,
-    //            _fdbitrate, unsigned(fdtimings.prescaler),
-    //            unsigned(fdtimings.sjw), unsigned(fdtimings.bs1),
-    //            unsigned(fdtimings.bs2), fdtimings.sample_point_permill/10.0f,
-    //            stats.tx_requests,
-    //            stats.tx_rejected,
-    //            stats.tx_overflow,
-    //            stats.tx_success,
-    //            stats.tx_timedout,
-    //            stats.tx_abort,
-    //            stats.rx_received,
-    //            stats.rx_overflow,
-    //            stats.rx_errors,
-    //            stats.num_busoff_err,
-    //            stats.num_events,
-    //            stats.ecr,
-    //            stats.fdf_rx_received,
-    //            stats.fdf_tx_requests,
-    //            stats.fdf_tx_success);
+    str.printf("HPM CAN%u bitrate=%lu init=%u busoff=%u\n"
+               "tx_requests:%lu tx_success:%lu tx_timedout:%lu tx_rejected:%lu tx_abort:%lu\n"
+               "rx_received:%lu rx_overflow:%lu rx_errors:%lu num_busoff_err:%lu num_events:%lu\n",
+               unsigned(self_index_),
+               (unsigned long)_bitrate,
+               unsigned(initialised_),
+               unsigned(_detected_bus_off),
+               (unsigned long)stats.tx_requests,
+               (unsigned long)stats.tx_success,
+               (unsigned long)stats.tx_timedout,
+               (unsigned long)stats.tx_rejected,
+               (unsigned long)stats.tx_abort,
+               (unsigned long)stats.rx_received,
+               (unsigned long)stats.rx_overflow,
+               (unsigned long)stats.rx_errors,
+               (unsigned long)stats.num_busoff_err,
+               (unsigned long)stats.num_events);
 }
 #endif
 
@@ -691,7 +681,6 @@ extern "C"
 #ifdef HAL_CAN_IFACE2_ENABLE
     // FDCAN3
     SDK_DECLARE_EXT_ISR_M(IRQn_CAN2, can2_irq_handler);
-    void can2_irq_handler(void)
     void can2_irq_handler(void)
     {
         handleCANInterrupt(2);

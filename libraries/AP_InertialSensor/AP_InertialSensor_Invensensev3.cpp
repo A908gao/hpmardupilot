@@ -297,6 +297,7 @@ void AP_InertialSensor_Invensensev3::start()
 
 #if HAL_INS_HIGHRES_SAMPLE
     // now we know who we are, other things can be checked for
+    highres_sampling = false;
     if (enable_highres_sampling(accel_instance)) {
         switch (inv3_type) {
             case Invensensev3_Type::ICM42688: // HiRes 19bit
@@ -887,6 +888,13 @@ void AP_InertialSensor_Invensensev3::set_filter_and_scaling_icm456xy(void)
         fast_sampling = false;
     }
 
+    // AN-000364: CLKIN/RTC max ODR is 3.2kHz — force internal clock at 6.4kHz
+    const bool use_clkin =
+#ifdef ICM45686_CLKIN
+        (backend_rate_hz <= 3200);
+#else
+        false;
+#endif
     if (backend_rate_hz <= 3200) {
         odr_config = 0x04; // 3200Hz
         sampling_rate_hz = 3200;
@@ -905,13 +913,24 @@ void AP_InertialSensor_Invensensev3::set_filter_and_scaling_icm456xy(void)
     // setup accel for 1.6-6.4kHz, 32g range
     register_write(INV3REG_456_ACCEL_CONFIG0, (0x0 << 4) | odr_config); // ACCEL_UI_FS_SEL b4-6, ACCEL_ODR b0-3
 
-    // enable timestamps on FIFO data 
-    // SMC_CONTROL_0
+    // enable timestamps on FIFO data
+    // SMC_CONTROL_0 — ACCEL_LP_CLK_SEL only with CLKIN at <=3.2kHz (AN-000478 §7.3)
     uint8_t reg = register_read_bank_icm456xy(INV3BANK_456_IPREG_TOP1_ADDR, 0x58);
-#ifdef ICM45686_CLKIN
-    reg |= (0x1<<4U); // ACCEL_LP_CLK_SEL
-#endif
+    if (use_clkin) {
+        reg |= (0x1<<4U); // ACCEL_LP_CLK_SEL
+    } else {
+        reg &= ~(0x1<<4U);
+    }
     register_write_bank_icm456xy(INV3BANK_456_IPREG_TOP1_ADDR, 0x58, reg | 0x01);
+
+#ifdef ICM45686_CLKIN
+    if (use_clkin) {
+        // INT2 pad as CLKIN, AUX1 disabled, RTC mode (after ACCEL_LP_CLK_SEL=1)
+        register_write(INV3REG_456_IOC_PAD_SCENARIO_OVRD, (0x1 << 2)| 0x2 , true);
+        register_write(INV3REG_456_IOC_PAD_SCENARIO_AUX_OVRD, (0x1<<1U), true);
+        register_write(INV3REG_456_RTC_CONFIG, (0x1<<5U));
+    }
+#endif
 
     uint8_t fifo_config = (1U<<2 | 1U<<1); // FIFO_ACCEL_EN | FIFO_GYRO_EN, FIFO_IF_EN disabled
 #if HAL_INS_HIGHRES_SAMPLE
@@ -1110,18 +1129,9 @@ bool AP_InertialSensor_Invensensev3::hardware_init(void)
         // gyro and accel in low-noise mode
         register_write(INV3REG_456_PWR_MGMT0, 0x0f);
 
-#ifdef ICM45686_CLKIN
-        /*************************CLKIN setting*************************/
-        // override INT2 pad as CLKIN, AUX1 disabled
-        register_write(INV3REG_456_IOC_PAD_SCENARIO_OVRD, (0x1 << 2)| 0x2 , true);
+        // CLKIN/RTC pad setup is done in set_filter_and_scaling_icm456xy()
+        // after ODR is known (AN-000364: no CLKIN at 6.4kHz).
 
-        // disable AUX1
-        register_write(INV3REG_456_IOC_PAD_SCENARIO_AUX_OVRD, (0x1<<1U), true);
-
-        // enable RTC MODE
-        register_write(INV3REG_456_RTC_CONFIG, (0x1<<5U));
-#endif
-        /*************************CLKIN setting*************************/
         // disable STC
         uint8_t reg = register_read_bank_icm456xy(INV3BANK_456_IPREG_TOP1_ADDR, 0x68);  // I3C_STC_MODE b2
         register_write_bank_icm456xy(INV3BANK_456_IPREG_TOP1_ADDR, 0x68, reg & ~0x04);

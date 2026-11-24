@@ -62,6 +62,7 @@ private:
     enum Rotation _rotation;
     uint8_t _instance;
     bool _force_external;
+    uint32_t _last_sample_ms;
 };
 
 #endif  // AP_COMPASS_IIS2MDC_ENABLED

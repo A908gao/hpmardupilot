@@ -38,5 +38,7 @@ flash bank xpi0 hpm_xpi 0x80000000 0x400000 1 1 \$_TARGET0 0xF3040000 0x7 0x1000
 }
 init
 reset halt
-program $ELF verify reset exit
+program $ELF verify
+reset run
+shutdown
 "

@@ -29,7 +29,13 @@
 // default protocols:    ardupilot/libraries/AP_SerialManager/AP_SerialManager.cpp
 // HPMicro serials:    AP_HAL_HPMICRO/HAL_HPM_Class.cpp
 
-// Inertial sensors - ICM45686 on SPI2
+// Inertial sensors - ICM45686 on SPI2 (20-bit hi-res + CLKIN from OSC1 32.768kHz)
+#ifndef HAL_INS_HIGHRES_SAMPLE
+#define HAL_INS_HIGHRES_SAMPLE 1
+#endif
+#ifndef HAL_DEFAULT_INS_FAST_SAMPLE
+#define HAL_DEFAULT_INS_FAST_SAMPLE 1
+#endif
 #define HAL_INS_DEFAULT HAL_INS_NONE
 #define PROBE_IMU_SPI(driver, devname, args ...) ADD_BACKEND(AP_InertialSensor_ ## driver::probe(*this,hal.spi->get_device(devname),##args))
 #define HAL_INS_PROBE_LIST PROBE_IMU_SPI(Invensensev3, HAL_INS_ICM45686_NAME, ROTATION_YAW_180)
@@ -42,14 +48,24 @@
     ADD_BACKEND(AP_Baro_ICP201XX::probe(*this, GET_I2C_DEVICE(0, 0x63))); \
     ADD_BACKEND(AP_Baro_ICP201XX::probe(*this, GET_I2C_DEVICE(0, 0x64)))
 
-// Compass - disabled for minimal bringup
-#define AP_COMPASS_ENABLE_DEFAULT 0
+// Compass - external IIS2MDC on GPS1 I2C (hwdef bus 1 = I2C0 @ PB10/PB11)
+#define AP_COMPASS_ENABLE_DEFAULT 1
+#define AP_COMPASS_IIS2MDC_ENABLED 1
+/* Explicit probe only — skip full external I2C mag sweep on GPS1 bus */
+#undef HAL_PROBE_EXTERNAL_I2C_COMPASSES
 #define ALLOW_ARM_NO_COMPASS
+#define PROBE_MAG_I2C(driver, bus, addr, args ...) ADD_BACKEND(DRIVER_ ##driver, AP_Compass_ ## driver::probe(GET_I2C_DEVICE(bus, addr),##args))
+/* bus 1 = external I2C0; 0x1E = IIS2MDC 7-bit addr; force_external=true */
+#define HAL_MAG_PROBE_LIST PROBE_MAG_I2C(IIS2MDC, 1, HAL_COMPASS_IIS2MDC_I2C_ADDR, true, HAL_COMPASS_IIS2MDC_ORIENTATION_EXTERNAL)
 
-// PWM groups (FMU_CH1-8: PD00,PD01,PD02,PC29,PC04,PC05,PC09,PC08)
+// PWM groups for FMU_CH1-8:
+//   CH1-4: PWM3 direct (P2/P3/P4/P7) on clock_mot3
+//   CH5-8: PWM1 ch8-11 via TRGM1 (P11/P09/P08/P10) on clock_mot1
 #define HAL_PWM_GROUPS {\
-    { .mcpwm_group_id = 0, .base = HPM_PWM3, .clock = clock_mot2, .rc_frequency = 50, .ch_mask = 0xFF, }, \
+    { .mcpwm_group_id = 0, .base = HPM_PWM3, .clock = clock_mot3, .rc_frequency = 50, .ch_mask = 0x0F, }, \
+    { .mcpwm_group_id = 1, .base = HPM_PWM1, .clock = clock_mot1, .rc_frequency = 50, .ch_mask = 0xF0, }, \
 }
+#define HAL_HPM_FMU_PWM_MAP 1
 
 #define NUM_SERVO_CHANNELS    8
 
@@ -76,8 +92,15 @@
 #define AP_NOTIFY_GPIO_LED_RGB_RED_PIN 2
 #define AP_NOTIFY_GPIO_LED_RGB_GREEN_PIN 3
 #define AP_NOTIFY_GPIO_LED_RGB_BLUE_PIN 4
+/*
+ * Board RGB only by default. Probing NCP5623 on internal (baro) I2C and
+ * sharing GPS1 I2C with IIS2MDC was associated with USB/MAVLink lockups.
+ * Enable External NCP5623 via NTF_LED_TYPES once I2C bus sharing is solid.
+ * Target value when stable: 225 = Board|DroneCAN|NCP5623_Ext|NCP5623_Int.
+ */
 #define DEFAULT_NTF_LED_TYPES Notify_LED_Board
 // #define AP_FEATURE_BOARD_DETECT 1
+/* Keep other I2C mag drivers off; IIS2MDC enabled explicitly above */
 #define AP_COMPASS_I2C_BACKEND_DEFAULT_ENABLED 0
 #define AP_BARO_BACKEND_DEFAULT_ENABLED 0
 /* string names for well known SPI devices */

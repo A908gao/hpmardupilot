@@ -74,10 +74,12 @@ extern const AP_HAL::HAL& hal;
 #endif
 #endif
 
+#ifndef DRONECAN_STACK_SIZE
 #if HAL_CANFD_SUPPORTED
 #define DRONECAN_STACK_SIZE     8192
 #else
 #define DRONECAN_STACK_SIZE     4096
+#endif
 #endif
 
 #ifndef AP_DRONECAN_DEFAULT_NODE
@@ -492,11 +494,18 @@ void AP_DroneCAN::init(uint8_t driver_index, bool enable_filters)
     node_status_msg.mode = UAVCAN_PROTOCOL_NODESTATUS_MODE_OPERATIONAL;
     node_status_msg.sub_mode = 0;
 
-    // Spin node for device discovery
+    // Spin node for device discovery (keep short on HPM — 5×1000ms blocked USB/MAVLink)
+#if CONFIG_HAL_BOARD == HAL_BOARD_HPMICRO
+    for (uint8_t i = 0; i < 2; i++) {
+        send_node_status();
+        canard_iface.process(20);
+    }
+#else
     for (uint8_t i = 0; i < 5; i++) {
         send_node_status();
         canard_iface.process(1000);
     }
+#endif
 
     hal.util->snprintf(_thread_name, sizeof(_thread_name), "dronecan_%u", driver_index);
 

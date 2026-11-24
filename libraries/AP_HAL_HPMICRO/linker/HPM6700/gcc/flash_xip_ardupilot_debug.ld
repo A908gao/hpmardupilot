@@ -10,12 +10,19 @@ HEAP_SIZE = _heap_size;
 
 MEMORY
 {
+    /* HPM6754IAN2: 4MB flash; AXI SRAM0+1 = 1MB @ 0x01080000..0x0117FFFF */
     FLASH (rx) : ORIGIN = 0x80000000, LENGTH = _flash_size
     ILM (wx) : ORIGIN = 0x00000000, LENGTH = 256K
     DLM (w) : ORIGIN = 0x00080000, LENGTH = 256K
+    /* Core1 ILM+DLM via system bus — FreeRTOS ucHeap (single-core) */
     CPU1_SLV (wx) : ORIGIN = 0x01180000, LENGTH = 512K
-    AXI_SRAM (wx) : ORIGIN = 0x01080000, LENGTH = 512K + 128K + 64K + 32K    /* AXI SRAM0 */
-    NONCACHEABLE_RAM (wx) : ORIGIN = 0x01170000, LENGTH = 64K    /* AXI SRAM1 */
+    /*
+     * AXI 1MB with PMA NAPOT-aligned NONCACHEABLE (see flash_xip_ardupilot.ld).
+     *   AXI 768K | NONCACHEABLE 128K @ 0x01140000 | AXI_HI 112K | SHARE 16K
+     */
+    AXI_SRAM (wx) : ORIGIN = 0x01080000, LENGTH = 768K
+    NONCACHEABLE_RAM (wx) : ORIGIN = 0x01140000, LENGTH = 128K
+    AXI_SRAM_HI (wx) : ORIGIN = 0x01160000, LENGTH = 112K
     SHARE_RAM (w) : ORIGIN = 0x0117C000, LENGTH = 16K
     AHB_SRAM (w) : ORIGIN = 0xF0300000, LENGTH = 32k
     APB_SRAM (w): ORIGIN = 0xF40F0000, LENGTH = 8k
@@ -286,8 +293,10 @@ SECTIONS
         . = ALIGN(8);
         KEEP(*(.framebuffer))
         KEEP(*(.framebuffer.*))
+        KEEP(*(.axi_sram_hi))
+        KEEP(*(.axi_sram_hi.*))
         . = ALIGN(8);
-    } > AXI_SRAM
+    } > AXI_SRAM_HI
 
     .noncacheable (NOLOAD) : {
         . = ALIGN(8);

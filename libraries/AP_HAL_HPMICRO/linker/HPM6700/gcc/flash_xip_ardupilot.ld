@@ -10,12 +10,24 @@ HEAP_SIZE = _heap_size;
 
 MEMORY
 {
+    /* HPM6754IAN2: 4MB flash; AXI SRAM0+1 = 1MB @ 0x01080000..0x0117FFFF */
     FLASH (rx) : ORIGIN = 0x80000000, LENGTH = _flash_size
     ILM (wx) : ORIGIN = 0x00000000, LENGTH = 256K
     DLM (w) : ORIGIN = 0x00080000, LENGTH = 256K
+    /* Core1 ILM+DLM via system bus — FreeRTOS ucHeap (single-core) */
     CPU1_SLV (wx) : ORIGIN = 0x01180000, LENGTH = 512K
-    AXI_SRAM (wx) : ORIGIN = 0x01080000, LENGTH = 512K + 128K + 64K + 32K    /* AXI SRAM0 */
-    NONCACHEABLE_RAM (wx) : ORIGIN = 0x01170000, LENGTH = 64K    /* AXI SRAM1 */
+    /*
+     * AXI SRAM0+1 = 1MB @ 0x01080000..0x0117FFFF.
+     * PMA NAPOT: NONCACHEABLE start must be aligned to its size (128K).
+     * SHARE (16K) is fixed at 0x0117C000. Layout:
+     *   AXI           0x01080000..0x0113FFFF  768K
+     *   NONCACHEABLE  0x01140000..0x0115FFFF  128K  (128K-aligned, for USB/ETH DMA)
+     *   AXI_HI        0x01160000..0x0117BFFF  112K  (cacheable leftover)
+     *   SHARE         0x0117C000..0x0117FFFF   16K
+     */
+    AXI_SRAM (wx) : ORIGIN = 0x01080000, LENGTH = 768K
+    NONCACHEABLE_RAM (wx) : ORIGIN = 0x01140000, LENGTH = 128K
+    AXI_SRAM_HI (wx) : ORIGIN = 0x01160000, LENGTH = 112K
     SHARE_RAM (w) : ORIGIN = 0x0117C000, LENGTH = 16K
     AHB_SRAM (w) : ORIGIN = 0xF0300000, LENGTH = 32k
     APB_SRAM (w): ORIGIN = 0xF40F0000, LENGTH = 8k
@@ -92,8 +104,9 @@ SECTIONS
         /* *(.text.*selectHeight*) */
         /* *(.text.*FuseBodyVel*) */
         
-        Semaphores*.o* timers*.o* queue*.o* list*.o* event_groups*.o* tasks*.o* *port*.o* lib_a*.o*(.text)
-        Semaphores*.o* timers*.o* queue*.o* list*.o* event_groups*.o*  tasks*.o* *port*.o* lib_a*.o*(.text*)
+        /* FreeRTOS port only — do NOT use *port*.o* (matches AP_Networking_port) */
+        Semaphores*.o* timers*.o* queue*.o* list*.o* event_groups*.o* tasks*.o* port.c*.o* hpm_port*.o* portASM*.o* lib_a*.o*(.text)
+        Semaphores*.o* timers*.o* queue*.o* list*.o* event_groups*.o*  tasks*.o* port.c*.o* hpm_port*.o* portASM*.o* lib_a*.o*(.text*)
         . = ALIGN(8);
         __vector_ram_end__ = .;
     } > ILM
@@ -112,7 +125,9 @@ SECTIONS
         list*.o*(.text)
         event_groups*.o*(.text)
         tasks*.o*(.text)
-        *port*.o*(.text)
+        port.c*.o*(.text)
+        hpm_port*.o*(.text)
+        portASM*.o*(.text)
         lib_a*.o*(.text)
         Semaphores*.o*(.text*)
         timers*.o*(.text*)
@@ -120,7 +135,9 @@ SECTIONS
         list*.o*(.text*)
         event_groups*.o*(.text*)
         tasks*.o*(.text*)
-        *port*.o*(.text*)
+        port.c*.o*(.text*)
+        hpm_port*.o*(.text*)
+        portASM*.o*(.text*)
         lib_a*.o*(.text*)
         . = ALIGN(8);
         __ardupilot_ram_end__ = .;
@@ -156,7 +173,9 @@ SECTIONS
         list*.o*(.rodata)
         event_groups*.o*(.rodata)
         tasks*.o*(.rodata)
-        *port*.o*(.rodata)
+        port.c*.o*(.rodata)
+        hpm_port*.o*(.rodata)
+        portASM*.o*(.rodata)
         lib_a*.o*(.rodata)
         Semaphores*.o*(.rodata*)
         timers*.o*(.rodata*)
@@ -164,7 +183,9 @@ SECTIONS
         list*.o*(.rodata*)
         event_groups*.o*(.rodata*)
         tasks*.o*(.rodata*)
-        *port*.o*(.rodata*)
+        port.c*.o*(.rodata*)
+        hpm_port*.o*(.rodata*)
+        portASM*.o*(.rodata*)
         lib_a*.o*(.rodata*)
         Semaphores*.o*(.srodata)
         timers*.o*(.srodata)
@@ -172,7 +193,9 @@ SECTIONS
         list*.o*(.srodata)
         event_groups*.o*(.srodata)
         tasks*.o*(.srodata)
-        *port*.o*(.srodata)
+        port.c*.o*(.srodata)
+        hpm_port*.o*(.srodata)
+        portASM*.o*(.srodata)
         lib_a*.o*(.srodata)
         Semaphores*.o*(.srodata*)
         timers*.o*(.srodata*)
@@ -180,7 +203,9 @@ SECTIONS
         list*.o*(.srodata*)
         event_groups*.o*(.srodata*)
         tasks*.o*(.srodata*)
-        *port*.o*(.srodata*)
+        port.c*.o*(.srodata*)
+        hpm_port*.o*(.srodata*)
+        portASM*.o*(.srodata*)
         lib_a*.o*(.srodata*)
         . = ALIGN(8);
         __ardupilot_init_end__ = .;
@@ -398,8 +423,10 @@ SECTIONS
         . = ALIGN(8);
         KEEP(*(.framebuffer))
         KEEP(*(.framebuffer.*))
+        KEEP(*(.axi_sram_hi))
+        KEEP(*(.axi_sram_hi.*))
         . = ALIGN(8);
-    } > AXI_SRAM
+    } > AXI_SRAM_HI
 
     .noncacheable (NOLOAD) : {
         . = ALIGN(8);

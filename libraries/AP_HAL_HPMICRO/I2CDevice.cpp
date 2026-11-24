@@ -74,10 +74,13 @@ void I2CDeviceManager::init(void)
             i2c_config_t config;
             hpm_stat_t stat;
             uint32_t freq;
-            clock_add_to_group(i2c_bus_desc[i].bus_clock, 0);
-            freq = clock_get_frequency(i2c_bus_desc[i].bus_clock);
+            // Ensure peripheral clock is in the running group (same as board_init_i2c_clock)
+            freq = board_init_i2c_clock(i2c_bus_desc[i].port);
             if (freq == 0) {
-                // Avoid hanging boot if I2C clock is not ready
+                clock_add_to_group(i2c_bus_desc[i].bus_clock, 0);
+                freq = clock_get_frequency(i2c_bus_desc[i].bus_clock);
+            }
+            if (freq == 0) {
                 businfo[i].port = nullptr;
                 businfo[i].bus_clock = i2c_bus_desc[i].bus_clock;
                 businfo[i].soft = false;
@@ -94,10 +97,35 @@ void I2CDeviceManager::init(void)
             }
             businfo[i].port = i2c_bus_desc[i].port;
             businfo[i].bus_clock = i2c_bus_desc[i].bus_clock;
+            businfo[i].speed = i2c_bus_desc[i].speed;
+            businfo[i].bus_num = i;
             businfo[i].soft = false;
         }
     }
     _initialized = true;
+}
+
+/*
+ * Issue STOP after a failed transfer. CMPL timeouts in the HPM driver often
+ * leave the controller busy without STOP; keep this minimal (no delay/re-init)
+ * so probe paths cannot hang the boot before USB comes up.
+ */
+void I2CBus::recover(void)
+{
+    if (port == nullptr || soft) {
+        return;
+    }
+    port->STATUS = I2C_STATUS_CMPL_MASK | I2C_STATUS_ADDRHIT_MASK;
+    port->CTRL = I2C_CTRL_PHASE_STOP_MASK;
+    port->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
+    i2c_reset(port);
+    i2c_config_t config;
+    config.i2c_mode = (speed >= 400*KHZ) ? i2c_mode_fast : i2c_mode_normal;
+    config.is_10bit_addressing = false;
+    uint32_t freq = clock_get_frequency(bus_clock);
+    if (freq != 0) {
+        (void)i2c_init_master(port, freq, &config);
+    }
 }
 
 void I2CDeviceManager::init_singleton(void)
@@ -119,9 +147,10 @@ I2CDevice::I2CDevice(uint8_t busnum, uint8_t address, uint32_t bus_clock, bool u
     set_device_bus(busnum);
     set_device_address(address);
     pname = (char *)malloc(50);
-    sprintf(pname, "I2C:%u:%02x",
-             (unsigned)busnum, (unsigned)address);
-    hpmhal.console->printf("i2c device constructed %s\n", pname);
+    if (pname) {
+        sprintf(pname, "I2C:%u:%02x",
+                 (unsigned)busnum, (unsigned)address);
+    }
 }
 
 I2CDevice::~I2CDevice()
@@ -154,7 +183,6 @@ bool I2CDevice::transfer(const uint8_t *send, uint32_t send_len,
 #endif
     I2CDeviceManager::init_singleton();
     if (!bus.semaphore.check_owner()) {
-        hpmhal.console->printf("I2C: not owner of 0x%x\n", (unsigned)get_bus_id());
         return false;
     }
 
@@ -164,18 +192,27 @@ bool I2CDevice::transfer(const uint8_t *send, uint32_t send_len,
 
     const bool do_send = (send_len != 0 && send != nullptr);
     const bool do_recv = (recv_len != 0 && recv != nullptr);
+    if (!do_send && !do_recv) {
+        return false;
+    }
 
-    if (do_send && do_recv) {
-        // Register read with repeated start
-        return i2c_master_address_read(bus.port, _address,
-                                       (uint8_t *)send, send_len,
-                                       recv, recv_len) == status_success;
-    }
-    if (do_send) {
-        return i2c_master_write(bus.port, _address, (uint8_t *)send, send_len) == status_success;
-    }
-    if (do_recv) {
-        return i2c_master_read(bus.port, _address, recv, recv_len) == status_success;
+    /* Cap retries: probe used to burn boot time and re-init thrash the bus */
+    const uint8_t attempts = (_retries > 0) ? MIN(_retries, (uint8_t)3) : 1;
+    for (uint8_t i = 0; i < attempts; i++) {
+        hpm_stat_t st = status_invalid_argument;
+        if (do_send && do_recv) {
+            st = i2c_master_address_read(bus.port, _address,
+                                         (uint8_t *)send, send_len,
+                                         recv, recv_len);
+        } else if (do_send) {
+            st = i2c_master_write(bus.port, _address, (uint8_t *)send, send_len);
+        } else {
+            st = i2c_master_read(bus.port, _address, recv, recv_len);
+        }
+        if (st == status_success) {
+            return true;
+        }
+        bus.recover();
     }
     return false;
 }

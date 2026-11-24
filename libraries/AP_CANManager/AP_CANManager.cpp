@@ -111,6 +111,18 @@ const AP_Param::GroupInfo AP_CANManager::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("LOGLEVEL", 8, AP_CANManager, _loglevel, AP_CANManager::LOG_NONE),
 
+#if HAL_NUM_CAN_IFACES > 3
+    // @Group: P4_
+    // @Path: ../AP_CANManager/AP_CANIfaceParams.cpp
+    AP_SUBGROUPINFO(_interfaces[3], "P4_", 9, AP_CANManager, AP_CANManager::CANIface_Params),
+#endif
+
+#if HAL_MAX_CAN_PROTOCOL_DRIVERS > 3
+    // @Group: D4_
+    // @Path: ../AP_CANManager/AP_CANManager_CANDriver_Params.cpp
+    AP_SUBGROUPINFO(_drv_param[3], "D4_", 10, AP_CANManager, AP_CANManager::CANDriver_Params),
+#endif
+
     AP_GROUPEND
 };
 

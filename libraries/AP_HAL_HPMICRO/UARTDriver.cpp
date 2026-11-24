@@ -302,7 +302,9 @@ uint64_t UARTDriver::receive_time_constraint_us(uint16_t nbytes)
 void uart_isr(uint8_t num)
 {
     UARTDriver *ins = uart_instances[num];
-    assert(ins != nullptr);
+    if (ins == nullptr || ins->base == nullptr) {
+        return;
+    }
     
     uint8_t irq_id = uart_get_irq_id(ins->base);
     

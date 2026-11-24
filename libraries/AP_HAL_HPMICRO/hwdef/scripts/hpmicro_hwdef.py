@@ -378,24 +378,31 @@ class HPMicroHWDef(object):
         canlist = []
         clocklist = []
         can_order = []
-        can_rev_order = []
+        # HPM6700 has physical CAN0..CAN3; map phys → logical (-1 if unused)
+        can_rev = [-1, -1, -1, -1]
         for can in self.hpmicro_can:
             (idx,rx_ioc, tx_ioc, rx_af, rx_baf, rx_paf, tx_af, tx_baf, tx_paf, irqn, clock) = can
+            phys = int(idx)
+            logical = len(can_order)
             canlist.append(f"{{.base = HPM_CAN{idx}, .idx={idx}, .rx_ioc={rx_ioc}, .tx_ioc={tx_ioc}, .rx_af={rx_af}, .rx_baf={rx_baf}, .rx_paf={rx_paf}, .tx_af={tx_af}, .tx_baf={tx_baf}, .tx_paf={tx_paf}, .irqn={irqn}, .clock={clock} }}")
             clocklist.append(f"clock_can{idx}")
-            can_order.append(int(idx))  # 添加实际的整数值而不是格式化字符串
-            can_rev_order.append(int(idx))  # 添加实际的整数值而不是格式化字符串
-    
+            can_order.append(phys)
+            if phys < 0 or phys > 3:
+                self.error(f"Bad CAN physical index {phys}")
+            if can_rev[phys] != -1:
+                self.error(f"Duplicate CAN physical index {phys}")
+            can_rev[phys] = logical
+
         self.write_device_table(f, 'CAN devices', 'HAL_CAN_BUS_DESC_LIST', canlist)
         self.write_device_table(f, 'CAN devices', 'HAL_CAN_CLOCK_LIST', clocklist)
-    
+
         for i in can_order:
             f.write("#define HAL_CAN_IFACE%u_ENABLE\n" % i)
         f.write('#define HAL_CAN_INTERFACE_LIST %s\n' % ','.join([str(i) for i in can_order]))
-        f.write('#define HAL_CAN_INTERFACE_REV_LIST %s\n' % ','.join([str(i) for i in can_rev_order]))
+        f.write('#define HAL_CAN_INTERFACE_REV_LIST %s\n' % ','.join([str(i) for i in can_rev]))
+        f.write('#define HAL_CAN_INTERFACE_REV_SIZE 4\n')
         f.write('#define HAL_NUM_CAN_IFACES %d\n' % len(canlist))
         self.env_vars['HAL_NUM_CAN_IFACES'] = str(len(canlist))
-
     def write_ADC_config(self, f):
         '''write ADC config defines'''
 

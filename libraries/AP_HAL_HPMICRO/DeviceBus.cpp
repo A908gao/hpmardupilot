@@ -11,6 +11,7 @@
 
 #include "Scheduler.h"
 #include "Semaphores.h"
+#include "MemGuard.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -71,16 +72,17 @@ void  DeviceBus::bus_thread(void *arg)
         }
 
         // delay for at most 50ms, to handle newly added callbacks
-        uint32_t delay = 50000;
-        if (next_needed >= now && next_needed - now < delay) {
-            delay = next_needed - now;
+        uint32_t delay_us = 50000;
+        if (next_needed >= now && next_needed - now < delay_us) {
+            delay_us = next_needed - now;
         }
-        // don't delay for less than 100usec, so one thread doesn't
-        // completely dominate the CPU
-        if (delay < 100) {
-            delay = 100;
+        // don't delay for less than 1ms (FreeRTOS tick); avoid
+        // Scheduler::delay_microseconds(uint16_t) busy paths from bus threads
+        uint32_t delay_ms = delay_us / 1000U;
+        if (delay_ms < 1) {
+            delay_ms = 1;
         }
-        hpmhal.scheduler->delay_microseconds(delay);
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 }
 
@@ -110,8 +112,14 @@ AP_HAL::Device::PeriodicHandle DeviceBus::register_periodic_callback(uint32_t pe
 #ifdef BUSDEBUG
         hpmhal.console->printf("%s:%d Thread Start\n", __PRETTY_FUNCTION__, __LINE__);
 #endif
-        xTaskCreate(DeviceBus::bus_thread, name, Scheduler::DEVICE_SS,
-                    this, thread_priority, &bus_thread_handle);
+        /* FreeRTOS stack depth in words (DEVICE_SS). 2048 words overflowed. */
+        if (xTaskCreate(DeviceBus::bus_thread, name, Scheduler::DEVICE_SS,
+                        this, thread_priority, &bus_thread_handle) != pdPASS) {
+            thread_started = false;
+            bus_thread_handle = nullptr;
+            return nullptr;
+        }
+        MemGuard::note_task_created(name, Scheduler::DEVICE_SS);
     }
     DeviceBus::callback_info *callback = NEW_NOTHROW DeviceBus::callback_info;
     if (callback == nullptr) {

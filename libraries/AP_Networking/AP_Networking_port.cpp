@@ -106,7 +106,9 @@ void AP_Networking::Port::thread_create(AP_HAL::MemberProc proc)
         return;
     }
 
-    if (!hal.scheduler->thread_create(proc, thread_name, AP_NETWORKING_PORT_STACK_SIZE, AP_HAL::Scheduler::PRIORITY_UART, 0)) {
+    /* PRIORITY_NET (not UART): keep Ethernet ports in the COMM band with
+       CAN/I2C so NET_Pn cannot preempt / starve other protocols. */
+    if (!hal.scheduler->thread_create(proc, thread_name, AP_NETWORKING_PORT_STACK_SIZE, AP_HAL::Scheduler::PRIORITY_NET, 0)) {
         AP_BoardConfig::allocation_error("Failed to allocate %s client thread", thread_name);
     }
 }
@@ -379,7 +381,22 @@ bool AP_Networking::Port::send_receive(void)
             available = writebuffer->available();
             available = MIN(300U, available);
 #if AP_MAVLINK_PACKETISE_ENABLED
-            if (packetise) {
+            if (packetise && available > 0) {
+                const int16_t b0 = writebuffer->peek(0);
+                /*
+                  Drop non-MAVLink prefixes (e.g. GCS SiK radio nudge
+                  0x30 0x20) instead of UDP-framing them. Otherwise
+                  packetise keeps returning the junk prefix and real
+                  MAVLink never leaves the socket.
+                 */
+                if (b0 >= 0 && b0 != MAVLINK_STX_MAVLINK1 && b0 != MAVLINK_STX) {
+                    const uint16_t drop = mavlink_packetise(*writebuffer, available);
+                    if (drop > 0) {
+                        writebuffer->advance(drop);
+                        active = true;
+                    }
+                    return active;
+                }
                 available = mavlink_packetise(*writebuffer, available);
             }
 #endif
@@ -402,8 +419,17 @@ bool AP_Networking::Port::send_receive(void)
         ssize_t ret = -1;
         if (type == NetworkPortType::UDP_SERVER) {
             // UDP Server uses sendto, allowing us to change the destination address port on the fly
-            if(last_udp_connect_address != 0 && last_udp_connect_port != 0) {
+            if (last_udp_connect_address != 0 && last_udp_connect_port != 0) {
                 ret = sock->sendto(buf, n, last_udp_connect_address, last_udp_connect_port);
+                /*
+                  Some lwIP/HPM builds return -1/0 from sendto even after the
+                  datagram has been queued. Without advancing, packetise gets
+                  stuck on the same MAVLink frame and floods the client while
+                  never draining PARAM_VALUE / other traffic.
+                 */
+                if (ret <= 0 && n > 0) {
+                    ret = (ssize_t)n;
+                }
             }
         } else {
             // TCP Server and Client and UDP Client use send

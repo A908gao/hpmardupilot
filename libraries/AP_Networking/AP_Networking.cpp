@@ -18,7 +18,13 @@ extern const AP_HAL::HAL& hal;
 #include <hal_mii.h>
 #endif
 
+#if AP_NETWORKING_BACKEND_HPM
+#include "AP_Networking_HPM.h"
+#endif
+
+#if AP_NETWORKING_NEED_LWIP
 #include <lwipopts.h>
+#endif
 #include <errno.h>
 
 
@@ -166,6 +172,11 @@ void AP_Networking::init()
         backend = NEW_NOTHROW AP_Networking_ChibiOS(*this);
     }
 #endif
+#if AP_NETWORKING_BACKEND_HPM
+    if (backend == nullptr) {
+        backend = NEW_NOTHROW AP_Networking_HPM(*this);
+    }
+#endif
 #if AP_NETWORKING_BACKEND_SITL
     if (backend == nullptr) {
         backend = NEW_NOTHROW AP_Networking_SITL(*this);
@@ -233,10 +244,9 @@ void AP_Networking::announce_address_changes()
     }
 
 #if AP_HAVE_GCS_SEND_TEXT
-    char ipstr[16];
-    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "NET: IP      %s", SocketAPM::inet_addr_to_str(get_ip_active(), ipstr, sizeof(ipstr)));
-    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "NET: Mask    %s", SocketAPM::inet_addr_to_str(get_netmask_active(), ipstr, sizeof(ipstr)));
-    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "NET: Gateway %s", SocketAPM::inet_addr_to_str(get_gateway_active(), ipstr, sizeof(ipstr)));
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "NET: IP      %s", address_to_str(get_ip_active()));
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "NET: Mask    %s", address_to_str(get_netmask_active()));
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "NET: Gateway %s", address_to_str(get_gateway_active()));
 #endif
 
     announce_ms = as.last_change_ms;
@@ -331,7 +341,7 @@ void AP_Networking::startup_wait(void) const
     while (!hal.scheduler->is_system_initialized()) {
         hal.scheduler->delay(100);
     }
-#if AP_NETWORKING_BACKEND_CHIBIOS
+#if AP_NETWORKING_BACKEND_CHIBIOS || AP_NETWORKING_BACKEND_HPM
     do {
         hal.scheduler->delay(250);
     } while (get_ip_active() == 0);
@@ -343,6 +353,11 @@ void AP_Networking::startup_wait(void) const
  */
 bool AP_Networking::sendfile(SocketAPM *sock, int fd)
 {
+#if !AP_NETWORKING_SOCKETS_ENABLED
+    (void)sock;
+    (void)fd;
+    return false;
+#else
     WITH_SEMAPHORE(sem);
     if (sendfile_buf == nullptr) {
         uint32_t bufsize = AP_NETWORKING_SENDFILE_BUFSIZE;
@@ -377,8 +392,10 @@ bool AP_Networking::sendfile(SocketAPM *sock, int fd)
         }
     }
     return false;
+#endif // AP_NETWORKING_SOCKETS_ENABLED
 }
 
+#if AP_NETWORKING_SOCKETS_ENABLED
 void AP_Networking::SendFile::close(void)
 {
     AP::FS().close(fd);
@@ -424,6 +441,7 @@ void AP_Networking::sendfile_check(void)
         }
     }
 }
+#endif // AP_NETWORKING_SOCKETS_ENABLED
 
 AP_Networking *AP_Networking::singleton;
 
@@ -462,11 +480,20 @@ int ap_networking_printf(const char *fmt, ...)
     return 0;
 }
 
-// address to string using a static return buffer
+// address to string using a static return buffer (host byte order)
 const char *AP_Networking::address_to_str(uint32_t addr)
 {
     static char buf[16]; // 16 for aaa.bbb.ccc.ddd
+#if AP_NETWORKING_SOCKETS_ENABLED
     return SocketAPM::inet_addr_to_str(addr, buf, sizeof(buf));
+#else
+    snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
+             unsigned((addr >> 24) & 0xFF),
+             unsigned((addr >> 16) & 0xFF),
+             unsigned((addr >> 8) & 0xFF),
+             unsigned(addr & 0xFF));
+    return buf;
+#endif
 }
 
 #ifdef LWIP_PLATFORM_ASSERT

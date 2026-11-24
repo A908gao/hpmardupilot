@@ -459,20 +459,36 @@ void board_init_i2c(I2C_Type *ptr)
 uint32_t board_init_uart_clock(UART_Type *ptr)
 {
     uint32_t freq = 0U;
+    clock_name_t clk = clock_uart0;
+    bool ok = true;
+
     if (ptr == HPM_UART0) {
-        clock_add_to_group(clock_uart0, 0);
-        freq = clock_get_frequency(clock_uart0);
+        clk = clock_uart0;
+    } else if (ptr == HPM_UART1) {
+        clk = clock_uart1;
+    } else if (ptr == HPM_UART2) {
+        clk = clock_uart2;
+    } else if (ptr == HPM_UART3) {
+        clk = clock_uart3;
+    } else if (ptr == HPM_UART5) {
+        clk = clock_uart5;
     } else if (ptr == HPM_UART6) {
-        clock_add_to_group(clock_uart6, 0);
-        freq = clock_get_frequency(clock_uart6);
+        clk = clock_uart6;
+    } else if (ptr == HPM_UART8) {
+        clk = clock_uart8;
+    } else if (ptr == HPM_UART9) {
+        clk = clock_uart9;
     } else if (ptr == HPM_UART13) {
-        clock_add_to_group(clock_uart13, 0);
-        freq = clock_get_frequency(clock_uart13);
+        clk = clock_uart13;
     } else if (ptr == HPM_UART14) {
-        clock_add_to_group(clock_uart14, 0);
-        freq = clock_get_frequency(clock_uart14);
+        clk = clock_uart14;
     } else {
-        /* Not supported */
+        ok = false;
+    }
+
+    if (ok) {
+        clock_add_to_group(clk, 0);
+        freq = clock_get_frequency(clk);
     }
     return freq;
 }
@@ -1158,7 +1174,12 @@ hpm_stat_t board_init_enet_pins(ENET_Type *ptr)
     init_enet_pins(ptr);
 
     if (ptr == HPM_ENET0) {
-        gpio_set_pin_output_with_initial(BOARD_ENET_RGMII_RST_GPIO, BOARD_ENET_RGMII_RST_GPIO_INDEX, BOARD_ENET_RGMII_RST_GPIO_PIN, 0);
+        /* Power LAN8742A via VDD_3V3_ETH_EN (PC13), active high */
+        gpio_set_pin_output_with_initial(BOARD_ENET_RMII_PWR_GPIO,
+                                         BOARD_ENET_RMII_PWR_GPIO_INDEX,
+                                         BOARD_ENET_RMII_PWR_GPIO_PIN,
+                                         1);
+        board_delay_ms(10);
     } else if (ptr == HPM_ENET1) {
         gpio_set_pin_output_with_initial(BOARD_ENET_RMII_RST_GPIO, BOARD_ENET_RMII_RST_GPIO_INDEX, BOARD_ENET_RMII_RST_GPIO_PIN, 0);
     } else {
@@ -1171,9 +1192,11 @@ hpm_stat_t board_init_enet_pins(ENET_Type *ptr)
 hpm_stat_t board_reset_enet_phy(ENET_Type *ptr)
 {
     if (ptr == HPM_ENET0) {
-        gpio_write_pin(BOARD_ENET_RGMII_RST_GPIO, BOARD_ENET_RGMII_RST_GPIO_INDEX, BOARD_ENET_RGMII_RST_GPIO_PIN, 0);
-        board_delay_ms(1);
-        gpio_write_pin(BOARD_ENET_RGMII_RST_GPIO, BOARD_ENET_RGMII_RST_GPIO_INDEX, BOARD_ENET_RGMII_RST_GPIO_PIN, 1);
+        /* Power-cycle PHY supply (no dedicated nRST on this schematic) */
+        gpio_write_pin(BOARD_ENET_RMII_PWR_GPIO, BOARD_ENET_RMII_PWR_GPIO_INDEX, BOARD_ENET_RMII_PWR_GPIO_PIN, 0);
+        board_delay_ms(10);
+        gpio_write_pin(BOARD_ENET_RMII_PWR_GPIO, BOARD_ENET_RMII_PWR_GPIO_INDEX, BOARD_ENET_RMII_PWR_GPIO_PIN, 1);
+        board_delay_ms(50);
     } else if (ptr == HPM_ENET1) {
         gpio_write_pin(BOARD_ENET_RMII_RST_GPIO, BOARD_ENET_RMII_RST_GPIO_INDEX, BOARD_ENET_RMII_RST_GPIO_PIN, 0);
         board_delay_ms(1);

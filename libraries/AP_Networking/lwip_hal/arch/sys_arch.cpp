@@ -70,8 +70,13 @@ public:
 #ifdef HAL_BOOTLOADER_BUILD
         return thread_create_alloc(MAX(stacksize,2048), name, 60, function, arg);
 #else
+        /* stacksize from lwIP is bytes (often 0); Scheduler converts to words */
+#ifndef HPM_TCPIP_STACK_BYTES
+#define HPM_TCPIP_STACK_BYTES 4096
+#endif
         return hal.scheduler->thread_create(
-            FUNCTOR_BIND_MEMBER(&ThreadWrapper::run, void), name, MAX(stacksize,2048), AP_HAL::Scheduler::PRIORITY_NET, prio);
+            FUNCTOR_BIND_MEMBER(&ThreadWrapper::run, void), name,
+            MAX(stacksize, (int)HPM_TCPIP_STACK_BYTES), AP_HAL::Scheduler::PRIORITY_NET, prio);
 #endif
     }
 private:
@@ -86,8 +91,13 @@ sys_thread_t
 sys_thread_new(const char *name, lwip_thread_fn function, void *arg, int stacksize, int prio)
 {
     auto *thread_data = NEW_NOTHROW ThreadWrapper(function, arg);
+    if (thread_data == nullptr) {
+        return nullptr;
+    }
     if (!thread_data->create(name, stacksize, prio)) {
-        AP_HAL::panic("lwip: Failed to start thread %s", name);
+        // Do not panic: HPM heap is tight; eth bring-up must not brick the FC.
+        delete thread_data;
+        return nullptr;
     }
     return (sys_thread_t)thread_data;
 }

@@ -427,6 +427,13 @@ void AP_SerialManager::init()
     // always reset passthru port2 on boot
     passthru_port2.set_and_save_ifchanged(-1);
 
+    // SERIAL0 idx must be 0 (USB/console). Previously only i>=1 were
+    // assigned; a stale/non-zero state[0].idx made find_serial(MAVLink,0)
+    // return a telem UART so GCS never talked on USB.
+    for (uint8_t i=0; i<SERIALMANAGER_NUM_PORTS; i++) {
+        state[i].idx = i;
+    }
+
 #ifdef HAL_OTG1_CONFIG
     /*
       prevent users from changing USB protocol to other than
@@ -444,8 +451,6 @@ void AP_SerialManager::init()
     // initialise serial ports
     for (uint8_t i=1; i<SERIALMANAGER_NUM_PORTS; i++) {
         auto *uart = hal.serial(i);
-
-        state[i].idx = i;
 
         if (uart != nullptr) {
             set_options(i);

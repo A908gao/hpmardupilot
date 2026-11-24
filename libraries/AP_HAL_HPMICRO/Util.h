@@ -41,8 +41,10 @@ public:
     // return true if the reason for the reboot was a watchdog reset
     bool was_watchdog_reset() const override;
 
-    // request information on running threads
+    // request information on running threads / heap (@SYS/threads.txt, @SYS/meminfo.txt)
     void thread_info(ExpandingString &str) override;
+    void mem_info(ExpandingString &str) override;
+    void mem_map_info(ExpandingString &str);
     void malloc_type_init(uint8_t *buffer, size_t size);
 private:
 #ifdef HAL_PWM_ALARM

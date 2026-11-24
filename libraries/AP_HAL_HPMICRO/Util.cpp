@@ -14,16 +14,38 @@
 #include <string.h>
 #include <AP_Common/ExpandingString.h>
 #include <FreeRTOS.h>
+#include "task.h"
 #include "tinyalloc.h"
 #include "hpm_ppor_drv.h"
 #include "hpm_rtc_drv.h"
+#include "hpm_soc_feature.h"
 
 static const AP_HAL::HAL& hpmhal = AP_HAL::get_HAL();
 
 using namespace HPMicro;
 
 extern "C" {
-    extern uint32_t otp_read_from_shadow(uint32_t addr);
+    uint32_t otp_read_from_shadow(uint32_t addr);
+}
+
+/*
+  Factory chip UID is OTP words 8..11 (16 bytes). UUID at OTP_SOC_UUID_IDX is
+  a fallback. OTP MAC0 is often blank on production boards (shows as zeros).
+ */
+static bool read_chip_hwid(uint8_t out[16])
+{
+    uint32_t words[4] {};
+    for (uint32_t i = 0; i < 4; i++) {
+        words[i] = otp_read_from_shadow(8U + i);
+    }
+    const bool uid_blank = (words[0] | words[1] | words[2] | words[3]) == 0U;
+    if (uid_blank) {
+        for (uint32_t i = 0; i < 4; i++) {
+            words[i] = otp_read_from_shadow(OTP_SOC_UUID_IDX + i);
+        }
+    }
+    memcpy(out, words, 16);
+    return (words[0] | words[1] | words[2] | words[3]) != 0U;
 }
 void Util::malloc_type_init(uint8_t *buffer, size_t size)
 {
@@ -39,7 +61,7 @@ void Util::malloc_type_init(uint8_t *buffer, size_t size)
 */
 uint32_t Util::available_memory(void)
 {
-    return configTOTAL_HEAP_SIZE;
+    return xPortGetFreeHeapSize();
 }
 
 /*
@@ -139,49 +161,29 @@ Util::FlashBootloader Util::flash_bootloader()
 
 bool Util::get_system_id(char buf[50])
 {
-    char board_name[] = "HPMicro ";
-    uint8_t mac_addr[6] = {0};
-    
-    // Get MAC address from OTP memory
-    uint32_t macl = otp_read_from_shadow((uint32_t)OTP_SOC_MAC0_IDX);
-    uint32_t mach = otp_read_from_shadow((uint32_t)(OTP_SOC_MAC0_IDX + 1));
-    
-    mac_addr[0] = (macl >>  0) & 0xff;
-    mac_addr[1] = (macl >>  8) & 0xff;
-    mac_addr[2] = (macl >> 16) & 0xff;
-    mac_addr[3] = (macl >> 24) & 0xff;
-    mac_addr[4] = (mach >>  0) & 0xff;
-    mac_addr[5] = (mach >>  8) & 0xff;
-    
-    // Format MAC address as string
-    char mac_str[19] = {0};
-    snprintf(mac_str, sizeof(mac_str), "%02x %02x %02x %02x %02x %02x",
-             mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-    
-    // Combine board name and MAC address
-    snprintf(buf, 50, "%s%s", board_name, mac_str);
+    uint8_t uid[16] {};
+    if (!read_chip_hwid(uid)) {
+        snprintf(buf, 50, "HPMicro (no UID)");
+        return false;
+    }
+    // 12 bytes fits "HPMicro " + spaced hex into 50 chars (STM32-style width)
+    snprintf(buf, 50,
+             "HPMicro %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X",
+             uid[0], uid[1], uid[2], uid[3],
+             uid[4], uid[5], uid[6], uid[7],
+             uid[8], uid[9], uid[10], uid[11]);
     return true;
 }
 
 bool Util::get_system_id_unformatted(uint8_t buf[], uint8_t &len)
 {
-    uint8_t mac_addr[6] = {0};
-    
-    // Get MAC address from OTP memory
-    uint32_t macl = otp_read_from_shadow((uint32_t)OTP_SOC_MAC0_IDX);
-    uint32_t mach = otp_read_from_shadow((uint32_t)(OTP_SOC_MAC0_IDX + 1));
-
-    mac_addr[0] = (macl >>  0) & 0xff;
-    mac_addr[1] = (macl >>  8) & 0xff;
-    mac_addr[2] = (macl >> 16) & 0xff;
-    mac_addr[3] = (macl >> 24) & 0xff;
-    mac_addr[4] = (mach >>  0) & 0xff;
-    mac_addr[5] = (mach >>  8) & 0xff;
-    
-    // Copy MAC address to buffer, respecting buffer size
-    len = MIN(len, sizeof(mac_addr));
-    memcpy(buf, mac_addr, len);
-    
+    uint8_t uid[16] {};
+    if (!read_chip_hwid(uid)) {
+        len = 0;
+        return false;
+    }
+    len = MIN(len, (uint8_t)sizeof(uid));
+    memcpy(buf, uid, len);
     return true;
 }
 
@@ -203,7 +205,38 @@ bool Util::was_watchdog_reset() const
  */
 void Util::thread_info(ExpandingString &str)
 {
-    char buffer[1024];
-    vTaskGetRunTimeStats(buffer);
-    str.printf("\n\n%s\n", buffer);
+    const UBaseType_t ntasks = uxTaskGetNumberOfTasks();
+    str.printf("tasks=%u heap_free=%u heap_min=%u heap_total=%u\n",
+               unsigned(ntasks),
+               unsigned(xPortGetFreeHeapSize()),
+               unsigned(xPortGetMinimumEverFreeHeapSize()),
+               unsigned(configTOTAL_HEAP_SIZE));
+    str.printf("%-16s %5s %4s %10s %8s\n",
+               "Name", "State", "Prio", "FreeBytes", "FreeWords");
+
+    if (ntasks == 0 || ntasks > 64) {
+        return;
+    }
+    TaskStatus_t status[64];
+    configRUN_TIME_COUNTER_TYPE runtime = 0;
+    const UBaseType_t got = uxTaskGetSystemState(status, ntasks, &runtime);
+    for (UBaseType_t i = 0; i < got; i++) {
+        const uint32_t free_b = uint32_t(status[i].usStackHighWaterMark) * sizeof(StackType_t);
+        str.printf("%-16s %5u %4u %10u %8u\n",
+                   status[i].pcTaskName ? status[i].pcTaskName : "?",
+                   unsigned(status[i].eCurrentState),
+                   unsigned(status[i].uxCurrentPriority),
+                   unsigned(free_b),
+                   unsigned(status[i].usStackHighWaterMark));
+    }
+}
+
+void Util::mem_info(ExpandingString &str)
+{
+    str.printf("FreeRTOS heap\n");
+    str.printf("  free:      %u\n", unsigned(xPortGetFreeHeapSize()));
+    str.printf("  min_ever:  %u\n", unsigned(xPortGetMinimumEverFreeHeapSize()));
+    str.printf("  total:     %u\n", unsigned(configTOTAL_HEAP_SIZE));
+    str.printf("\n");
+    mem_map_info(str);
 }

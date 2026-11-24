@@ -166,23 +166,35 @@ bool GCS_MAVLINK::init(uint8_t instance)
       bootloader to wait for a firmware. It affects any SiK radio with
       CTS connected that is externally powered. To cope we send 0x30
       0x20 at 115200 on startup, which tells the bootloader to reset
-      and boot normally
-     */
-    _port->begin(115200);
-    AP_HAL::UARTDriver::flow_control old_flow_control = _port->get_flow_control();
-    _port->set_flow_control(AP_HAL::UARTDriver::FLOW_CONTROL_DISABLE);
-    for (uint8_t i=0; i<3; i++) {
-        hal.scheduler->delay(1);
-        _port->write(0x30);
-        _port->write(0x20);
-    }
-    // since tcdrain() and TCSADRAIN may not be implemented...
-    hal.scheduler->delay(1);
-    
-    _port->set_flow_control(old_flow_control);
+      and boot normally.
 
-    // now change back to desired baudrate
+      Skip this for network-mapped / registered ports (NET_P*, etc.): the
+      SiK nudge is ASCII "0 0 0 " and would be UDP/TCP-framed as junk,
+      blocking MAVLink packetise until drained.
+     */
     _port->begin(uartstate->baudrate());
+#if AP_SERIALMANAGER_REGISTER_ENABLED
+    const bool sik_nudge = uartstate->idx < AP_SERIALMANAGER_NET_PORT_1;
+#else
+    const bool sik_nudge = true;
+#endif
+    if (sik_nudge) {
+        _port->begin(115200);
+        AP_HAL::UARTDriver::flow_control old_flow_control = _port->get_flow_control();
+        _port->set_flow_control(AP_HAL::UARTDriver::FLOW_CONTROL_DISABLE);
+        for (uint8_t i=0; i<3; i++) {
+            hal.scheduler->delay(1);
+            _port->write(0x30);
+            _port->write(0x20);
+        }
+        // since tcdrain() and TCSADRAIN may not be implemented...
+        hal.scheduler->delay(1);
+
+        _port->set_flow_control(old_flow_control);
+
+        // now change back to desired baudrate
+        _port->begin(uartstate->baudrate());
+    }
 
     mavlink_comm_port[chan] = _port;
 

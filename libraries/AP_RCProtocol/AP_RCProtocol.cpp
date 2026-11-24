@@ -39,6 +39,7 @@
 #include "AP_RCProtocol_UDP.h"
 #include "AP_RCProtocol_FDM.h"
 #include "AP_RCProtocol_Radio.h"
+#include "AP_RCProtocol_IOMCU.h"
 #include <AP_Math/AP_Math.h>
 #include <RC_Channel/RC_Channel.h>
 
@@ -113,6 +114,9 @@ void AP_RCProtocol::init()
 #endif  // AP_RCPROTOCOL_FDM_ENABLED
 #if AP_RCPROTOCOL_RADIO_ENABLED
     backend[AP_RCProtocol::RADIO] = NEW_NOTHROW AP_RCProtocol_Radio(*this);
+#endif
+#if AP_RCPROTOCOL_IOMCU_ENABLED
+    backend[AP_RCProtocol::IOMCU] = NEW_NOTHROW AP_RCProtocol_IOMCU(*this);
 #endif
 }
 
@@ -630,6 +634,10 @@ const char *AP_RCProtocol::protocol_name_from_protocol(rcprotocol_t protocol)
 #if AP_RCPROTOCOL_RADIO_ENABLED
     case RADIO:
         return "Radio";
+#endif
+#if AP_RCPROTOCOL_IOMCU_ENABLED
+    case IOMCU:
+        return "IOMCU";
 #endif
     case NONE:
         break;
